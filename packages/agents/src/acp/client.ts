@@ -18,10 +18,6 @@ export interface AcpProcessLike {
   kill(): void;
 }
 
-export interface AcpSessionUpdate {
-  sessionId?: string;
-  update?: Record<string, unknown>;
-}
 
 export class AcpClient {
   private nextId = 1;

@@ -621,6 +621,12 @@ export class TaskRunner {
     }
 
     await log.append(taskId, agentId, 'agent.result', { followup: true, exitCode: result.exitCode });
+    let followupHint: string | undefined;
+    if (result.exitCode !== 0 || result.timedOut) {
+      const d = diagnoseFailure({ finalMessage: result.finalMessage, stderrTail: result.stderrTail, exitCode: result.exitCode });
+      followupHint = d ? `[${d.kind}] ${d.hint}` : `Agent 运行失败（exit=${result.exitCode}），详情见时间线。`;
+      await log.append(taskId, agentId, 'agent.error', { kind: d?.kind ?? 'unknown', hint: followupHint });
+    }
     const committed = lastWorktree ? await this.git.checkpoint(lastWorktree, `${taskId} followup ${agentId}`) : { committed: false };
     if (committed.committed) await log.append(taskId, 'system', 'git.checkpoint', { worktree: lastWorktree, hash: committed.hash });
 
@@ -672,6 +678,7 @@ export class TaskRunner {
       finishedAt: nowIso(),
       finalMessage: truncate(result.finalMessage, 2000),
       durationMs: result.durationMs,
+      error: followupHint,
     };
     fresh.runs.push(run);
     fresh.latestCapsuleId = capsule.id;

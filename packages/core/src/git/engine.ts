@@ -1,5 +1,4 @@
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { ChangedFile, FileChangeKind } from '../types.js';
@@ -168,11 +167,4 @@ export class GitEngine {
       return [];
     }
   }
-
-  async commitAll(root: string, message: string): Promise<{ committed: boolean; hash?: string }> {
-    return this.checkpoint(root, message);
-  }
 }
-
-export const gitEngine = new GitEngine();
-export const homeDir = os.homedir();
