@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgentOS — Build once, use every agent</title>
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <div class="brand">
+        <div class="logo">AOS</div>
+        <div>
+          <div class="brand-name">AgentOS</div>
+          <div class="brand-sub">Build once, use every agent.</div>
+        </div>
+      </div>
+      <nav>
+        <a href="#/agents" data-view="agents">🤖 Agents</a>
+        <a href="#/projects" data-view="projects">📁 Projects</a>
+        <a href="#/tasks" data-view="tasks">🗂️ Tasks</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div>Local-first · 数据在本机</div>
+        <div><a href="https://github.com" target="_blank" rel="noreferrer">M1 · 最小闭环</a></div>
+      </div>
+    </aside>
+    <main id="main"></main>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>

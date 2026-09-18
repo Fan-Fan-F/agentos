@@ -1,0 +1,10 @@
+{
+  "name": "@agentos/cli",
+  "version": "0.1.0",
+  "description": "AgentOS command line: serve, doctor, capsule inspection.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "agentos": "./bin/agentos.mjs"
+  }
+}

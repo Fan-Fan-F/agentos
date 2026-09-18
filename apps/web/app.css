@@ -1,0 +1,101 @@
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel2: #1c2333;
+  --border: #2d333b;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #58a6ff;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+#app { display: flex; min-height: 100vh; }
+#sidebar {
+  width: 230px; flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 18px;
+}
+.brand { display: flex; gap: 10px; align-items: center; }
+.logo {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: linear-gradient(135deg, #1f6feb, #58a6ff);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 13px; color: white;
+}
+.brand-name { font-weight: 700; font-size: 16px; }
+.brand-sub { font-size: 11px; color: var(--muted); }
+nav { display: flex; flex-direction: column; gap: 4px; }
+nav a {
+  color: var(--text); text-decoration: none; padding: 9px 12px;
+  border-radius: 8px; font-size: 14px;
+}
+nav a:hover { background: var(--panel2); }
+nav a.active { background: var(--panel2); color: var(--accent); }
+.sidebar-foot { margin-top: auto; font-size: 11px; color: var(--muted); }
+#main { flex: 1; padding: 24px 28px; max-width: 1100px; }
+h1 { font-size: 22px; margin: 0 0 6px; }
+h2 { font-size: 16px; margin: 22px 0 10px; }
+.sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+.card {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px; margin-bottom: 14px;
+}
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+input, textarea, select {
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 13px; width: 100%;
+}
+textarea { min-height: 80px; resize: vertical; font-family: inherit; }
+label { font-size: 12px; color: var(--muted); display: block; margin: 10px 0 4px; }
+button {
+  background: #21262d; color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 14px; font-size: 13px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.primary { background: #1f6feb; border-color: #1f6feb; color: white; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 20px;
+  font-size: 11px; border: 1px solid var(--border);
+}
+.badge.ok { color: var(--ok); border-color: var(--ok); }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+.badge.err { color: var(--err); border-color: var(--err); }
+.badge.mut { color: var(--muted); }
+.timeline { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
+.timeline li {
+  padding: 7px 10px; border-left: 2px solid var(--border);
+  margin-left: 6px; font-size: 12.5px; line-height: 1.5;
+}
+.timeline li .t { color: var(--muted); margin-right: 8px; font-family: Consolas, monospace; }
+.timeline li .actor { color: var(--accent); margin-right: 8px; font-weight: 600; }
+.timeline li.hl { border-left-color: var(--accent); background: rgba(88,166,255,0.06); }
+pre {
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; font-size: 12px;
+  overflow: auto; max-height: 380px; white-space: pre-wrap;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+a { color: var(--accent); }
+.muted { color: var(--muted); font-size: 12px; }
+.toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 99;
+  background: var(--panel2); border: 1px solid var(--accent);
+  border-radius: 10px; padding: 12px 16px; font-size: 13px; max-width: 420px;
+}
+.err-text { color: var(--err); font-size: 12px; margin-top: 6px; }
