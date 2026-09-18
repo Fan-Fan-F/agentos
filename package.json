@@ -19,7 +19,7 @@
     "desktop": "node scripts/desktop.mjs",
     "setup": "node scripts/setup.mjs",
     "doctor": "node apps/cli/bin/agentos.mjs doctor",
-    "e2e": "node scripts/e2e-handoff.mjs"
+    "e2e": "node scripts/real-e2e.mjs"
   },
   "dependencies": {
     "zod": "^3.25.76",

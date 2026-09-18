@@ -20,9 +20,9 @@
 
 ## 真实 agent 集成测试的立场
 
-- 本开发环境遵用户指令**不执行**用户已装的 claude/codex 等二进制（ADR-006）。因此：
+- 2026-09-19 夜间迭代经用户"夜间自主迭代"指令授权，已真实执行 claude/codex（dogfooding），并据实修复 4 个缺陷（见 docs/dogfood/ 与 docs/blockers.md）。日常自动发现仍保持只读（ADR-006），深度探测/安装仍需用户显式触发。
   - 不声称"真实集成测试通过"；
-  - 真实端到端由 **用户自愿运行** `node scripts/e2e-handoff.mjs --repo <git仓库> --from claude --to codex`（消耗用户自己的额度，输出全程时间线）；
+  - 真实端到端由 **用户自愿运行** `node scripts/real-e2e.mjs`（2026-09-19 已真实执行一轮，报告见 docs/dogfood/；agent 侧被用户账户问题阻塞，见 docs/blockers.md）；
   - 适配器与真实 CLI 的契约由①解析器 schema 样本单测 ②契约测试套件 ③e2e 脚本三层覆盖，任何一层失败都会暴露适配器回归。
 - 未来 CI（有沙箱环境时）可用环境变量 `AGENTOS_CONTRACT_REAL=1` 启用真实二进制冒烟（检测到未登录/未安装则优雅跳过并标注 SKIPPED，不伪造）。
 

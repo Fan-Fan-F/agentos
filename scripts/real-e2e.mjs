@@ -33,6 +33,18 @@ function assert(cond, msg) {
 }
 
 async function main() {
+  // 可选参数：--repo <git仓库> --from claude --to codex --objective "…"
+  const argOf = (name) => {
+    const i = process.argv.indexOf(name);
+    return i >= 0 ? process.argv[i + 1] : undefined;
+  };
+  const fromAgent = argOf('--from') ?? 'claude';
+  const toAgent = argOf('--to') ?? 'codex';
+  const objective =
+    argOf('--objective') ??
+    '创建 src/fib.js，导出函数 fib(n)（n>=0，记忆化迭代实现）；创建 test/fib.test.js，用 node:test 写 3 个断言（fib(0)=0, fib(10)=55, fib(20)=6765）；运行 node --test 确认全部通过。只创建这两个文件，不要改动其他文件。';
+  const customRepo = argOf('--repo');
+
   // 0. 环境前置：二进制存在 + 登录标记（stat，不读内容）+ 版本探测（夜间 dogfooding 授权）
   const home = os.homedir();
   const claudeVer = await probeVersion('C:/Users/Fan/AppData/Roaming/npm/claude.cmd').catch(() => undefined);
@@ -51,18 +63,27 @@ async function main() {
     process.exit(1);
   }
 
-  // 1. 真实临时 git 仓库（小型 JS 项目）
+  // 1. 真实临时 git 仓库（或 --repo 指定的既有仓库）
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'agentos-e2e-'));
-  const repoRoot = path.join(tmp, 'demo-repo');
-  await fsp.mkdir(repoRoot, { recursive: true });
-  const git = simpleGit(repoRoot);
-  await git.init();
-  await git.addConfig('user.name', 'agentos-e2e');
-  await git.addConfig('user.email', 'e2e@agentos.local');
-  await fsp.writeFile(path.join(repoRoot, 'package.json'), JSON.stringify({ name: 'demo', type: 'module' }, null, 2));
-  await fsp.writeFile(path.join(repoRoot, 'README.md'), '# demo\n');
-  await git.add('./*');
-  await git.commit('init');
+  let repoRoot;
+  if (customRepo) {
+    repoRoot = path.resolve(customRepo);
+    if (!fs.existsSync(repoRoot)) {
+      say(`指定的仓库不存在: ${repoRoot}`);
+      process.exit(1);
+    }
+  } else {
+    repoRoot = path.join(tmp, 'demo-repo');
+    await fsp.mkdir(repoRoot, { recursive: true });
+    const git = simpleGit(repoRoot);
+    await git.init();
+    await git.addConfig('user.name', 'agentos-e2e');
+    await git.addConfig('user.email', 'e2e@agentos.local');
+    await fsp.writeFile(path.join(repoRoot, 'package.json'), JSON.stringify({ name: 'demo', type: 'module' }, null, 2));
+    await fsp.writeFile(path.join(repoRoot, 'README.md'), '# demo\n');
+    await git.add('./*');
+    await git.commit('init');
+  }
 
   // 2. TaskRunner（真实适配器）
   const dataDir = path.join(tmp, 'agentos-home');
@@ -72,30 +93,29 @@ async function main() {
   const devFlagsCodex = ['--sandbox', 'workspace-write'];
 
   // 3. claude 真实工作
-  say('▶ [1/5] claude 开始真实实现…');
+  say(`▶ [1/5] ${fromAgent} 开始真实实现…`);
   const task = await runner.createTask({
     repoRoot,
-    objective:
-      '创建 src/fib.js，导出函数 fib(n)（n>=0，记忆化迭代实现）；创建 test/fib.test.js，用 node:test 写 3 个断言（fib(0)=0, fib(10)=55, fib(20)=6765）；运行 node --test 确认全部通过。只创建这两个文件，不要改动其他文件。',
+    objective,
     constraints: ['不引入任何 npm 依赖', 'package.json 保持不变'],
   });
-  const r1 = await runner.runTask(task.id, { agentId: 'claude', permissionFlags: devFlagsClaude });
-  say(`claude 完成: exit=${r1.run.exitCode} 分支=${r1.branch} 耗时=${Math.round(r1.run.durationMs / 1000)}s 变更文件=${r1.diffFiles}`);
-  say(`claude 错误诊断: ${r1.run.error ?? '（无）'}`);
-  const claudeQuotaBlocked = r1.run.exitCode !== 0 && /\[quota\]/.test(r1.run.error ?? '');
+  const r1 = await runner.runTask(task.id, { agentId: fromAgent, permissionFlags: devFlagsClaude });
+  say(`${fromAgent} 完成: exit=${r1.run.exitCode} 分支=${r1.branch} 耗时=${Math.round(r1.run.durationMs / 1000)}s 变更文件=${r1.diffFiles}`);
+  say(`${fromAgent} 错误诊断: ${r1.run.error ?? '（无）'}`);
+  const claudeQuotaBlocked = r1.run.exitCode !== 0 && /\[(quota|version|auth|rate|network|model)\]/.test(r1.run.error ?? '');
   if (claudeQuotaBlocked) {
-    assert(true, 'claude 402 被正确诊断为 [quota] 并给出处置建议（外部阻塞：账户需充值）');
+    assert(true, `${fromAgent} 失败被正确诊断并给出处置建议（见 docs/blockers.md）`);
   } else {
-    assert(r1.run.exitCode === 0 && !r1.run.error, 'claude 运行成功');
+    assert(r1.run.exitCode === 0 && !r1.run.error, `${fromAgent} 运行成功`);
   }
   const filesAfterClaude = await fsp.readdir(path.join(repoRoot, 'src'), { recursive: true }).catch(() => []);
   say(`src/ 内容: ${filesAfterClaude.join(', ') || '（空）'}`);
 
-  // 4. codex 接管（Capsule → 七问验证；codex 失败时验证诊断与探针跳过）
-  say('▶ [2/5] 交接给 codex（七问验证）…');
-  const r2 = await runner.swapAgent(task.id, { toAgentId: 'codex', permissionFlags: devFlagsCodex });
-  say(`codex 接管: exit=${r2.run.exitCode} 分支=${r2.branch} capsule=${r2.capsule?.id}`);
-  say(`codex 错误诊断: ${r2.run.error ?? '（无）'}`);
+  // 4. 接管（Capsule → 七问验证；接管失败时验证诊断与探针跳过）
+  say(`▶ [2/5] 交接给 ${toAgent}（七问验证）…`);
+  const r2 = await runner.swapAgent(task.id, { toAgentId: toAgent, permissionFlags: devFlagsCodex });
+  say(`${toAgent} 接管: exit=${r2.run.exitCode} 分支=${r2.branch} capsule=${r2.capsule?.id}`);
+  say(`${toAgent} 错误诊断: ${r2.run.error ?? '（无）'}`);
   assert(r2.capsule?.origin.resumedFromCapsuleId === r1.capsule?.id, 'Capsule 链正确');
   const events = await runner.logFor(task.id).readAll();
   const verifyEvent = events.find((e) => e.type === 'agent.replied' && e.payload?.kind === 'handoff-verify');

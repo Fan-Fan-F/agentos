@@ -18,7 +18,7 @@
 - ✅ TaskRunner：solo / swap / forkAll / ask / recover（崩溃恢复）
 - ✅ server：Fastify REST + WS；零构建 Web UI（Minimal）
 - ✅ 测试：unit / integration / adapter contract / handoff / recovery 全绿
-- 🟡 真实 agent 端到端验证：提供 `scripts/e2e-handoff.mjs`；本开发环境遵用户指令**未执行**用户的 claude/codex（契约测试以 Stub 覆盖，解析器以真实 schema 样本单测覆盖 —— 不冒充"真实集成测试通过"）
+- 🟡 真实 agent 端到端验证：`scripts/real-e2e.mjs` 已真实执行：引擎半程（Capsule 链/HANDOFF/时间线/诊断/探针跳过）真实验证通过；agent 半程被用户侧问题阻塞（claude 402 需充值、codex 需升级，见 docs/blockers.md），解除后重跑即完成
 - 🟡 AcpAdapter：接口位已留，实现列为 M3
 
 ## M2 — 深化（进行中）

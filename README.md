@@ -19,7 +19,7 @@ AgentOS 不是又一个 "Claude Code + Codex + Gemini CLI 启动器"。它要解
 | 能力 | 状态 |
 |---|---|
 | 本机 Agent 发现（PATH/npm 全局/家目录标记，只读） | ✅ Implemented |
-| Headless 适配器：Claude Code / Codex / Gemini CLI / OpenCode + Stub | ✅ Implemented（真实 agent 未在本开发环境执行，见 TESTING.md） |
+| Headless 适配器：Claude Code / Codex / Gemini CLI / OpenCode + Stub | ✅ Implemented（已真实调用验证：启动/解析/诊断/交接链路；代码产出半程被测试账户问题阻塞，见 docs/blockers.md） |
 | Universal Session Capsule（v1，版本化 + Markdown 视图） | ✅ Implemented |
 | Context Compiler（minimal/standard/full + 预算裁剪） | ✅ Implemented |
 | Git Workspace Engine（独立 worktree / checkpoint / diff / commits） | ✅ Implemented |
@@ -71,7 +71,7 @@ npm start         # 仅启动服务（浏览器手动打开 http://localhost:733
 试用真实 agent 的交接闭环（需要你本机已安装并登录相应 CLI，消耗你自己的额度）：
 
 ```bash
-node scripts/e2e-handoff.mjs --repo <你的git仓库> --from claude --to codex
+node scripts/real-e2e.mjs（默认 dogfood 场景；也可传入 --repo/--from/--to/--objective）
 ```
 
 ## 文档地图
