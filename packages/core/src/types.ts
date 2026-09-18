@@ -58,7 +58,7 @@ export interface ChangedFile {
   change: FileChangeKind;
 }
 
-export type TaskStatus = 'created' | 'running' | 'interrupted' | 'done' | 'failed';
+export type TaskStatus = 'created' | 'running' | 'waiting' | 'interrupted' | 'done' | 'failed';
 
 export type RunMode = 'run' | 'swap' | 'fork' | 'ask' | 'resume';
 

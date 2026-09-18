@@ -78,7 +78,7 @@ describe('TaskRunner 引擎闭环', () => {
     expect(outcome.capsule!.handoff.summary).toContain('实现 X');
 
     const after = await runner.getTask(task.id);
-    expect(after.status).toBe('done');
+    expect(after.status).toBe('waiting');
     expect(after.latestCapsuleId).toBe(outcome.capsule!.id);
     expect(after.runs[0]!.sessionId).toBe('claude-s1');
 
@@ -189,7 +189,7 @@ describe('TaskRunner 引擎闭环', () => {
     const r = await runner.resumeTask(task.id); // 同 agent → 原生 resume 通道
     expect(r.capsule!.origin.resumedFromCapsuleId).toBe(t.latestCapsuleId);
     expect(claude.calls.filter((c) => c.resumed).length).toBe(beforeResume + 1);
-    expect((await runner.getTask(task.id)).status).toBe('done');
+    expect((await runner.getTask(task.id)).status).toBe('waiting');
   });
 
   it('updateProgress 写入的进度会进入下一次 capsule', async () => {
@@ -219,7 +219,7 @@ describe('TaskRunner 引擎闭环', () => {
     expect(r.capsule!.origin.resumedFromCapsuleId).toBeTruthy();
     expect(r.capsule!.origin.agentId).toBe('claude');
     const after = await runner.getTask(task.id);
-    expect(after.status).toBe('done');
+    expect(after.status).toBe('waiting');
     expect(after.runs.at(-1)!.mode).toBe('resume');
     const events = await runner.logFor(task.id).readAll();
     expect(events.some((e) => e.type === 'agent.followup')).toBe(true);

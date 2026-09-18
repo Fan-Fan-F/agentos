@@ -52,6 +52,7 @@ function relTime(ts) {
 const STATUS_META = {
   created: { label: '已创建', cls: '' },
   running: { label: '运行中', cls: 'info pulse' },
+  waiting: { label: '等待下一步 · 可换人/跟进/分叉', cls: 'warn' },
   interrupted: { label: '已中断 · 可恢复', cls: 'warn' },
   done: { label: '已完成', cls: 'ok' },
   failed: { label: '失败', cls: 'err' },
@@ -504,12 +505,23 @@ function connectWS(taskId) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws?taskId=${encodeURIComponent(taskId)}`);
   state.ws = ws;
+  let intentional = false;
+  ws.onopen = () => { const el = document.getElementById('wsState'); if (el) el.textContent = '· 实时'; };
   ws.onmessage = (m) => {
     let evt;
     try { evt = JSON.parse(m.data); } catch { return; }
     if (evt.type === 'history') state.events = evt.events || [];
     else { state.events.push(evt); }
     if (state.activeTab === 'timeline') renderTab();
+  };
+  ws.onclose = () => {
+    // 服务重启/网络闪断：自动重连（同任务才重连），重连后服务端会重放 history
+    const el = document.getElementById('wsState');
+    if (el) el.textContent = '· 重连中…';
+    if (intentional || state.currentTaskId !== taskId) return;
+    setTimeout(() => {
+      if (state.currentTaskId === taskId && (!state.ws || state.ws.readyState > 1)) connectWS(taskId);
+    }, 2500);
   };
 }
 

@@ -144,7 +144,7 @@ describe('AgentOS REST API', () => {
 
     const taskView = await server.app.inject({ method: 'GET', url: `/api/tasks/${taskId}` });
     expect(taskView.statusCode).toBe(200);
-    expect(taskView.json().task.status).toBe('done');
+    expect(taskView.json().task.status).toBe('waiting');
   });
 
   it('ask / fork / resume / 进度更新 / 安装计划 dry-run', async () => {

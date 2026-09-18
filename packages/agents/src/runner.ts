@@ -394,7 +394,7 @@ export class TaskRunner {
       task = await this.getTask(taskId);
       task.runs.push(outcome.run);
       if (outcome.capsule) task.latestCapsuleId = outcome.capsule.id;
-      task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'done' : 'failed';
+      task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'waiting' : 'failed';
       task.updatedAt = nowIso();
       await this.store.saveTask(task);
       await this.logFor(taskId).append(taskId, 'system', 'task.finished', { status: task.status, exitCode: outcome.run.exitCode });
@@ -500,7 +500,7 @@ export class TaskRunner {
     task = await this.getTask(taskId);
     task.runs.push(outcome.run);
     task.latestCapsuleId = capsule.id;
-    task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'done' : 'failed';
+    task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'waiting' : 'failed';
     task.updatedAt = nowIso();
     await this.store.saveTask(task);
     await this.logFor(taskId).append(taskId, 'system', 'task.finished', { status: task.status, swap: true });
@@ -646,7 +646,7 @@ export class TaskRunner {
     };
     fresh.runs.push(run);
     fresh.latestCapsuleId = capsule.id;
-    fresh.status = result.exitCode === 0 && !result.timedOut ? 'done' : 'failed';
+    fresh.status = result.exitCode === 0 && !result.timedOut ? 'waiting' : 'failed';
     fresh.updatedAt = nowIso();
     await this.store.saveTask(fresh);
     await log.append(taskId, 'system', 'capsule.saved', { capsuleId: capsule.id });
@@ -698,7 +698,7 @@ export class TaskRunner {
       if (o.capsule) task.latestCapsuleId = o.capsule.id;
     }
     const anyOk = outcomes.some((o) => o.run.exitCode === 0 && !o.run.error);
-    task.status = anyOk ? 'done' : 'failed';
+    task.status = anyOk ? 'waiting' : 'failed';
     task.updatedAt = nowIso();
     await this.store.saveTask(task);
     await this.logFor(taskId).append(taskId, 'system', 'task.finished', { status: task.status, fork: true, agents: opts.agentIds });
@@ -764,7 +764,7 @@ export class TaskRunner {
         const fresh = await this.getTask(taskId);
         fresh.runs.push(run);
         fresh.latestCapsuleId = capsule.id;
-        fresh.status = result.exitCode === 0 ? 'done' : 'failed';
+        fresh.status = result.exitCode === 0 ? 'waiting' : 'failed';
         fresh.updatedAt = nowIso();
         await this.store.saveTask(fresh);
         await this.logFor(taskId).append(taskId, agentId, 'agent.result', { resumed: true, exitCode: result.exitCode });
