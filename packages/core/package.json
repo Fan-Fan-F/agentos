@@ -1,0 +1,23 @@
+{
+  "name": "@agentos/core",
+  "version": "0.1.0",
+  "description": "AgentOS core domain: Universal Session Capsule, Context Compiler, Git workspace engine, timeline, storage, router.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p ."
+  },
+  "dependencies": {
+    "zod": "^3.25.76",
+    "simple-git": "^3.28.0",
+    "nanoid": "^5.1.5"
+  }
+}
