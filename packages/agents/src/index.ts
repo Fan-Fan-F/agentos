@@ -19,6 +19,7 @@ export * from './spawn.js';
 export * from './where.js';
 export * from './acp/jsonrpc.js';
 export * from './acp/client.js';
+export * from './importers.js';
 
 /** 默认适配器组：四家 headless CLI（未安装的 agent 在 run 时给出明确错误，discovery 会提前提示）。 */
 export function createDefaultAdapters(): Array<ReturnType<typeof createClaudeAdapter> | ReturnType<typeof createCodexAdapter> | ReturnType<typeof createGeminiAdapter> | ReturnType<typeof createOpencodeAdapter>> {

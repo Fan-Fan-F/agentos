@@ -27,6 +27,9 @@ AgentOS 不是又一个 "Claude Code + Codex + Gemini CLI 启动器"。它要解
 | Session Fork（多 agent 相同起点并行 + 汇总对比） | ✅ Implemented |
 | Agent 间提问协作（ask） | ✅ Implemented |
 | 统一 Timeline（JSONL 持久化 + WebSocket 实时推送） | ✅ Implemented |
+| followUp 同会话跟进（原生 resume 优先） | ✅ Implemented |
+| 会话导入（裸 Claude Code / Codex 会话 → Capsule → 任意 agent 接管，只读） | ✅ Implemented |
+| Windows / macOS / Linux（launcher 解析 + stdin/@file 提示词通道 + CI 三平台矩阵） | ✅ Implemented（CI 提交后持续验证） |
 | 本地 Web UI（零构建静态 SPA） | ✅ Implemented (Minimal) |
 | CLI：`doctor` / `serve` / `capsule` | ✅ Implemented |
 | ACP 适配器 / MCP Hub / Permission Broker / Workflow Canvas / Tauri 壳 | ⏳ 后续里程碑（见 ROADMAP） |

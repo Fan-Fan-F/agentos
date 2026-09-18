@@ -9,10 +9,14 @@
 | Unit | Capsule schema 往返/版本策略、ContextCompiler 预算裁剪、Store 原子写与重载、EventLog 追加/重放、Memory 去重、Router 评分 | 纯本地 |
 | Integration（Git） | GitEngine 对**真实临时 git 仓库**：init/commit/worktree/branch/diff/checkpoint/remove、分支命名约束 | 真实 git |
 | Adapter Contract | 统一契约套件对 StubAdapter 断言：事件流形状、sessionRef 捕获、resume 契约、中断、退出事件 | 契约级 |
-| 解析器 Unit | Claude stream-json / Codex --json 的**真实 schema 样本行** → 归一化 AgentEvent；文本兜底管线 | schema 样本（来自 docs/research/04，标注来源） |
+| 解析器 Unit | Claude stream-json / Codex --json 的**真实 schema 样本行** → 归一化 AgentEvent；文本兜底管线；提示词通道（stdin/@file）断言 | schema 样本（来自 docs/research/04，标注来源） |
+| 导入器 Unit | 自造 Claude/Codex 会话 JSONL fixture → 会话列表 + Capsule 转换（坏行容错、子代理过滤） | fixture（不触碰真实用户目录） |
+| Launcher Unit | resolveLauncher 实测断言：claude→原生 exe 直接执行、codex→node+js（本机真实验证，见 COMPATIBILITY 平台矩阵） | 只读解析，不执行 agent |
 | Handoff 集成 | Stub A → Swap → Stub B：B 收到的 prompt 必须含目标/决策/HANDOFF 标记；七问探针发出且回答入 Timeline；新 capsule 链接源 capsule | 契约级 |
-| 崩溃恢复 | "重启"后 recoverAll 把 running 判为 interrupted；resume 用 capsule 续接产生新 capsule | 契约级 |
-| Server API | fastify.inject 全 REST 面（health/agents/projects/tasks/run/swap/ask/diff/capsule/events） | 契约级 |
+| followUp 集成 | 同会话续聊走原生 resume；链式 Capsule；并发守卫（同任务二次运行拒绝） | 契约级 |
+| 崩溃恢复 | "重启"后 recoverAll 把 running 判为 interrupted；resume 用 capsule 续接产生新 capsule；Store 跳过损坏文件 | 契约级 |
+| Server API | fastify.inject 全 REST 面（health/agents/projects/tasks/run/swap/ask/followup/fork/diff/capsule/events/imports）+ 安全面（bypass flag 400） | 契约级 |
+| 跨平台 CI | GitHub Actions 矩阵 windows/ubuntu/macos：build + test + doctor 只读冒烟 | 提交后 CI 执行 |
 
 ## 真实 agent 集成测试的立场
 

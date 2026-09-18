@@ -21,12 +21,17 @@
 - 🟡 真实 agent 端到端验证：提供 `scripts/e2e-handoff.mjs`；本开发环境遵用户指令**未执行**用户的 claude/codex（契约测试以 Stub 覆盖，解析器以真实 schema 样本单测覆盖 —— 不冒充"真实集成测试通过"）
 - 🟡 AcpAdapter：接口位已留，实现列为 M3
 
-## M2 — 深化
+## M2 — 深化（进行中）
+- ✅ 会话导入器：读取 ~/.claude/projects、~/.codex/sessions 既有会话（只读、容错）→ Capsule → 创建接管任务
+- ✅ followUp 同会话跟进（原生 resume 优先）
+- ✅ Windows 进程启动加固（launcher 解析，规避 CVE-2024-27980 .cmd EINVAL）
+- ✅ 长提示词通道（stdin / gemini @file），规避命令行长度与上游 stdin 重复 bug
+- ✅ CI 三平台矩阵（windows/ubuntu/macos）
+- ✅ API 安全面：权限参数黑名单
 - ⬜ SQLite（node:sqlite）存储后端（Store 接口不变）
 - ⬜ Codex/Gemini 真实接入的兼容性矩阵实测（COMPATIBILITY.md 更新）
 - ⬜ worktree setup 钩子（每任务初始化命令：装依赖等）
-- ⬜ Capsule 导入器：读取 ~/.claude/projects、~/.codex/sessions 既有会话（只读、容错）
-- ⬜ Permission Profile → 各家 flag 映射（MVP 为默认安全档）
+- ⬜ Permission Profile → 各家 flag 映射（已有黑名单基线）
 
 ## M3 — 协议层
 - ⬜ AcpAdapter（@zed-industries/agent-client-protocol；OpenCode/Gemini 优先）

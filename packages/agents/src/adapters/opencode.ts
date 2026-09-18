@@ -1,20 +1,21 @@
-import { CliHeadlessAdapter } from '../cliHeadless.js';
+import { CliHeadlessAdapter, type PromptInvocation } from '../cliHeadless.js';
 import { profileFor } from '../catalog.js';
 
 /**
  * OpenCode 适配器（opencode run --format json；session 引用来自事件中的 sessionID 字段）。
- * 注意 `-p` 是 server 密码不是 prompt（docs/research/04 §4）。
+ * 提示词走 stdin（官方管道模式，社区实践"长提示词首选 stdin"）。注意 `-p` 是 server 密码不是 prompt。
  */
 export function createOpencodeAdapter(binary = 'opencode'): CliHeadlessAdapter {
   return new CliHeadlessAdapter({
     id: 'opencode',
     profile: profileFor('opencode'),
     binary,
-    buildRunArgs(prompt, opts) {
-      return ['run', '--format', 'json', ...(opts?.extraArgs ?? []), prompt];
+    npmPackage: 'opencode-ai',
+    buildRunArgs(_prompt, opts): PromptInvocation {
+      return { args: ['run', '--format', 'json', ...(opts?.extraArgs ?? [])], stdin: _prompt };
     },
-    buildResumeArgs(sessionRef, prompt, opts) {
-      return ['run', '--session', sessionRef, ...(opts?.extraArgs ?? []), prompt];
+    buildResumeArgs(sessionRef, _prompt, opts): PromptInvocation {
+      return { args: ['run', '--session', sessionRef, '--format', 'json', ...(opts?.extraArgs ?? [])], stdin: _prompt };
     },
     parseLine(line, ctx) {
       let obj: Record<string, unknown>;

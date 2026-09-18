@@ -24,15 +24,11 @@ export function defaultDataDir(): string {
   return process.env.AGENTOS_HOME || path.join(os.homedir(), '.agentos');
 }
 
-export class CorruptRecordError extends Error {
-  constructor(public readonly file: string, public readonly cause: unknown) {
-    super(`损坏的记录文件（已跳过）: ${file}`);
-    this.name = 'CorruptRecordError';
-  }
-}
-
 /** 按实体分目录的 JSON 存储（ADR-002；SQLite 后置，接口不变）。 */
 export class JsonStore<T extends { id: string }> {
+  /** all() 跳过损坏文件时记录于此（崩溃恢复韧性：一条坏记录不拖垮列表） */
+  readonly skippedFiles: string[] = [];
+
   constructor(private readonly dir: string) {
     ensureDir(dir);
   }
@@ -62,15 +58,17 @@ export class JsonStore<T extends { id: string }> {
     } catch {
       return [];
     }
+    this.skippedFiles.length = 0;
     const out: T[] = [];
     for (const name of names) {
       if (!name.endsWith('.json')) continue;
+      const file = path.join(this.dir, name);
       try {
-        const raw = await fsp.readFile(path.join(this.dir, name), 'utf8');
+        const raw = await fsp.readFile(file, 'utf8');
         out.push(JSON.parse(raw) as T);
-      } catch (err) {
-        if (name.includes('.tmp')) continue;
-        throw new CorruptRecordError(path.join(this.dir, name), err);
+      } catch {
+        // 损坏/半写文件：跳过并记录，不拖垮整个列表（崩溃韧性）
+        this.skippedFiles.push(file);
       }
     }
     return out;

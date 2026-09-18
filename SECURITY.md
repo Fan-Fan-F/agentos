@@ -5,7 +5,7 @@
 1. **凭据零接触**：AgentOS 绝不读取、复制、上传、迁移任何 agent 的认证凭据（`~/.claude/.credentials.json`、`~/.codex/auth.json`、`~/.gemini/oauth_creds.json` 等只允许 stat 存在性，用于"是否已登录"的粗略提示）。
 2. **已登录不重登**：认证始终由原厂 agent 自有机制管理；AgentOS 不要求、不协助、不代为登录。
 3. **默认不执行用户已装的 agent**：自动发现只做存在性扫描（PATH stat / npm 全局目录列举 / 家目录标记 stat）；`--version` 探测与安装都需要用户显式触发（ADR-006）。
-4. **不绕权**：禁止通过平台帮 agent 获得其本无法合法获得的权限；bypass 类 flag（`--dangerously-skip-permissions`、`--yolo`）只允许由用户在策略档中显式选择，绝不默认携带。
+4. **不绕权**：禁止通过平台帮 agent 获得其本无法合法获得的权限；API 层对权限参数做**黑名单校验**（`dangerously/bypass/yolo` 类 flag 一律 400 拒绝），确需解锁须以 `AGENTOS_ALLOW_BYPASS=1` 显式启动服务并自担风险；bypass 类 flag 绝不默认携带。
 5. **配置写入须确认**：未来 MCP Hub / Permission 映射写入用户 agent 配置文件（`.mcp.json`、`config.toml`、`settings.json`、`opencode.json`）前，必须展示 diff 并获得确认。
 6. **来源官方**：安装中心只提供官方 registry/安装器的命令预览；不使用第三方镜像二进制。
 

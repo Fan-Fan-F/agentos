@@ -14,9 +14,15 @@ import {
 import {
   createDefaultAdapters,
   executeInstall,
+  listClaudeSessions,
+  listCodexSessions,
   planInstall,
   scanAgents,
   TaskRunner,
+  claudeSessionToCapsule,
+  codexSessionToCapsule,
+  defaultClaudeProjectsDir,
+  defaultCodexSessionsDir,
   type AgentAdapter,
 } from '@agentos/agents';
 
@@ -48,6 +54,22 @@ function resolveWebRoot(explicit?: string): string | undefined {
   return fs.existsSync(candidate) ? candidate : undefined;
 }
 
+/**
+ * 权限参数黑名单（SECURITY.md）：API 层拒绝 bypass 类 flag。
+ * 确有需要时由用户显式设置 AGENTOS_ALLOW_BYPASS=1 启动服务并自担风险。
+ */
+const DANGEROUS_FLAG_RE = /dangerously|bypass|yolo/i;
+
+function sanitizePermissionFlags(flags?: string[]): string[] | undefined {
+  if (!flags?.length) return undefined;
+  if (process.env.AGENTOS_ALLOW_BYPASS === '1') return flags;
+  const bad = flags.filter((f) => DANGEROUS_FLAG_RE.test(f));
+  if (bad.length) {
+    throw new Error(`拒绝危险权限参数: ${bad.join(', ')}（平台策略禁止绕过 agent 权限；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险）`);
+  }
+  return flags;
+}
+
 /** 构建本地 API 服务（依赖注入便于测试；ADR-001）。 */
 export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Promise<AgentOSServer> {
   const dataDir = opts.dataDir ?? defaultDataDir();
@@ -59,13 +81,14 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
   const doScan = scan;
 
   const projects = new JsonStore<ProjectRecord>(path.join(dataDir, 'projects'));
+  const imports = new JsonStore<Record<string, unknown> & { id: string }>(path.join(dataDir, 'imports'));
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
 
   // 启动即恢复：把"上次运行中"的任务标记为 interrupted（任务书 §24）
   const recovered = await runner.recoverAll();
   if (recovered.length) app.log.warn({ recovered }, 'recovered interrupted tasks');
 
-  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.1.0' }));
+  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.2.0' }));
 
   // ---------- Agents ----------
   let agentsCache: { at: number; data: DiscoveredAgent[] } | undefined;
@@ -87,8 +110,40 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const plan = planInstall(id);
     if (!plan) return reply.code(404).send({ error: `没有 ${id} 的官方安装方案` });
     if (!body.execute) return reply.send(plan);
-    const result = await executeInstall(plan);
-    return reply.send({ plan, result });
+    try {
+      const result = await executeInstall(plan);
+      return reply.send({ plan, result });
+    } catch (err) {
+      return reply.code(500).send({ error: (err as Error).message });
+    }
+  });
+
+  // ---------- 会话导入（只读，用户显式触发） ----------
+  app.get('/api/imports/:source', async (req, reply) => {
+    const { source } = req.params as { source: string };
+    const q = req.query as { dir?: string };
+    try {
+      if (source === 'claude') return await listClaudeSessions(q.dir || defaultClaudeProjectsDir());
+      if (source === 'codex') return await listCodexSessions(q.dir || defaultCodexSessionsDir());
+      return reply.code(400).send({ error: 'source 必须是 claude 或 codex' });
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/imports/save', async (req, reply) => {
+    const body = (req.body ?? {}) as { source?: string; file?: string; objective?: string };
+    if (!body.file) return reply.code(400).send({ error: '缺少 file' });
+    try {
+      const capsule =
+        body.source === 'codex'
+          ? await codexSessionToCapsule(body.file, { objective: body.objective })
+          : await claudeSessionToCapsule(body.file, { objective: body.objective });
+      await imports.put(capsule as unknown as Record<string, unknown> & { id: string });
+      return reply.code(201).send(capsule);
+    } catch (err) {
+      return reply.code(400).send({ error: `导入失败: ${(err as Error).message}` });
+    }
   });
 
   // ---------- Projects ----------
@@ -127,6 +182,8 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
       objective?: string;
       constraints?: string[];
       userInstructions?: string[];
+      /** 从已保存的导入 Capsule 创建任务（接管平台外历史会话） */
+      capsuleId?: string;
     };
     let repoRoot = body.repoRoot;
     if (!repoRoot && body.projectId) {
@@ -134,14 +191,33 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
       repoRoot = proj?.path;
     }
     if (!repoRoot) return reply.code(400).send({ error: '缺少 repoRoot 或 projectId' });
-    if (!body.objective?.trim()) return reply.code(400).send({ error: '缺少 objective' });
+
+    let importedCapsule: Record<string, unknown> | undefined;
+    if (body.capsuleId) {
+      importedCapsule = await imports.get(body.capsuleId);
+      if (!importedCapsule) return reply.code(404).send({ error: `导入 Capsule 不存在: ${body.capsuleId}` });
+    }
+    const taskCapsule = importedCapsule as
+      | { task?: { objective?: string; constraints?: string[]; userInstructions?: string[] }; progress?: { completed?: string[]; remaining?: string[]; decisions?: unknown[]; rejectedApproaches?: unknown[] } }
+      | undefined;
+    const objective = body.objective?.trim() || taskCapsule?.task?.objective;
+    if (!objective) return reply.code(400).send({ error: '缺少 objective（且未提供可用的导入 Capsule）' });
     try {
       const task = await runner.createTask({
         repoRoot,
-        objective: body.objective.trim(),
-        constraints: body.constraints ?? [],
-        userInstructions: body.userInstructions ?? [],
+        objective,
+        constraints: body.constraints ?? taskCapsule?.task?.constraints ?? [],
+        userInstructions: body.userInstructions ?? taskCapsule?.task?.userInstructions ?? [],
       });
+      const prog = taskCapsule?.progress;
+      if (prog && ((prog.completed?.length ?? 0) + (prog.remaining?.length ?? 0) > 0 || (prog.decisions?.length ?? 0) > 0)) {
+        await runner.updateProgress(task.id, {
+          completed: prog.completed ?? [],
+          remaining: prog.remaining ?? [],
+          decisions: (prog.decisions ?? []) as never,
+          rejectedApproaches: (prog.rejectedApproaches ?? []) as never,
+        });
+      }
       return reply.code(201).send(task);
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
@@ -169,7 +245,7 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { agentId?: string; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number };
     try {
-      return await runner.runTask(id, body);
+      return await runner.runTask(id, { ...body, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -177,10 +253,21 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/swap', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { toAgentId?: string; level?: 'minimal' | 'standard' | 'full' };
+    const body = (req.body ?? {}) as { toAgentId?: string; level?: 'minimal' | 'standard' | 'full'; permissionFlags?: string[] };
     if (!body.toAgentId) return reply.code(400).send({ error: '缺少 toAgentId' });
     try {
-      return await runner.swapAgent(id, body as { toAgentId: string });
+      return await runner.swapAgent(id, { toAgentId: body.toAgentId, level: body.level, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  app.post('/api/tasks/:id/followup', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const body = (req.body ?? {}) as { message?: string; agentId?: string };
+    if (!body.message?.trim()) return reply.code(400).send({ error: '缺少 message' });
+    try {
+      return await runner.followUp(id, { message: body.message.trim(), agentId: body.agentId });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -209,10 +296,10 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/fork', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { agentIds?: string[] };
+    const body = (req.body ?? {}) as { agentIds?: string[]; permissionFlags?: string[] };
     if (!body.agentIds?.length) return reply.code(400).send({ error: '缺少 agentIds' });
     try {
-      return await runner.forkAll(id, { agentIds: body.agentIds });
+      return await runner.forkAll(id, { agentIds: body.agentIds, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }

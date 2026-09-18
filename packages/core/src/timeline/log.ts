@@ -12,6 +12,8 @@ import { ensureDir } from '../store/jsonStore.js';
  */
 export class EventLog {
   private emitter = new EventEmitter();
+  /** 追加串行化：并行 fork 时避免 JSONL 行交错 */
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly file: string) {
     ensureDir(path.dirname(file));
@@ -23,6 +25,12 @@ export class EventLog {
   }
 
   async append(taskId: string, actor: string, type: string, payload?: unknown): Promise<TimelineEvent> {
+    const run = this.chain.then(() => this.doAppend(taskId, actor, type, payload));
+    this.chain = run.catch(() => {});
+    return run;
+  }
+
+  private async doAppend(taskId: string, actor: string, type: string, payload?: unknown): Promise<TimelineEvent> {
     const evt: TimelineEvent = { id: newId('evt'), ts: nowIso(), taskId, actor, type, payload };
     await fsp.appendFile(this.file, JSON.stringify(evt) + '\n', 'utf8');
     this.emitter.emit('event', evt);

@@ -28,6 +28,18 @@ describe('JsonStore（ADR-002）', () => {
     expect(await s.get('nope')).toBeUndefined();
   });
 
+  it('all() 跳过损坏文件（崩溃韧性），valid 记录照常返回', async () => {
+    const dir = tmp();
+    const s = new JsonStore<{ id: string }>(dir);
+    await s.put({ id: 'good' });
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(path.join(dir, 'bad.json'), '{"broken":半行');
+    writeFileSync(path.join(dir, 'x.tmp.json'), '忽略的临时文件'.repeat(1));
+    const all = await s.all();
+    expect(all.map((r) => r.id)).toEqual(['good']);
+    expect(s.skippedFiles.some((f) => f.includes('bad.json'))).toBe(true);
+  });
+
   it('atomicWriteJson 覆盖已存在文件（Windows rename 语义）', async () => {
     const file = path.join(tmp(), 'x.json');
     await atomicWriteJson(file, { a: 1 });

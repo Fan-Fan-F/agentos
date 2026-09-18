@@ -1,36 +1,45 @@
-import { CliHeadlessAdapter } from '../cliHeadless.js';
+import { CliHeadlessAdapter, type PromptInvocation } from '../cliHeadless.js';
 import { profileFor } from '../catalog.js';
 
-/** Claude Code 适配器（stream-json；session_id 来自 system/init 与 result 事件，见 docs/research/04 §1）。 */
+/**
+ * Claude Code 适配器（stream-json；session_id 来自 system/init 与 result 事件，见 docs/research/04 §1）。
+ * 提示词走 stdin（官方管道模式：`cat prompt | claude -p --output-format stream-json`），
+ * 避开 Windows 命令行长度上限与转义问题。
+ */
 export function createClaudeAdapter(binary = 'claude'): CliHeadlessAdapter {
   return new CliHeadlessAdapter({
     id: 'claude',
     profile: profileFor('claude'),
     binary,
-    buildRunArgs(prompt, opts) {
-      return [
-        '-p',
-        prompt,
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        ...(opts?.allowedTools?.length ? ['--allowedTools', opts.allowedTools.join(',')] : []),
-        ...(opts?.permissionFlags ?? []),
-        ...(opts?.extraArgs ?? []),
-      ];
+    npmPackage: '@anthropic-ai/claude-code',
+    buildRunArgs(prompt, opts): PromptInvocation {
+      return {
+        args: [
+          '-p',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          ...(opts?.allowedTools?.length ? ['--allowedTools', opts.allowedTools.join(',')] : []),
+          ...(opts?.permissionFlags ?? []),
+          ...(opts?.extraArgs ?? []),
+        ],
+        stdin: prompt,
+      };
     },
-    buildResumeArgs(sessionRef, prompt, opts) {
-      return [
-        '--resume',
-        sessionRef,
-        '-p',
-        prompt,
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        ...(opts?.permissionFlags ?? []),
-        ...(opts?.extraArgs ?? []),
-      ];
+    buildResumeArgs(sessionRef, prompt, opts): PromptInvocation {
+      return {
+        args: [
+          '--resume',
+          sessionRef,
+          '-p',
+          '--output-format',
+          'stream-json',
+          '--verbose',
+          ...(opts?.permissionFlags ?? []),
+          ...(opts?.extraArgs ?? []),
+        ],
+        stdin: prompt,
+      };
     },
     parseLine(line, ctx) {
       let obj: Record<string, unknown>;

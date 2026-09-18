@@ -11,10 +11,13 @@ function fakeAgent() {
   const proc: AcpProcessLike = { stdin: agentStdin, stdout: agentStdout, kill() {} };
 
   const seen: Array<{ id?: number; method: string; params?: unknown }> = [];
+  /** agent 收到的"响应/错误"（client 的应答），用于验证防挂死策略 */
+  const replies: Array<Record<string, unknown>> = [];
   let nextId = 1;
   const reader = createMessageReader(agentStdin);
   reader.onMessage((msg) => {
     if ('method' in msg) seen.push({ id: (msg as { id?: number }).id, method: msg.method, params: msg.params });
+    else replies.push(msg as Record<string, unknown>);
     const req = msg as { id?: number; method: string };
     if (req.id === undefined) return;
     // 按协议依次应答
@@ -23,7 +26,13 @@ function fakeAgent() {
     } else if (req.method === 'session/new') {
       writeMessage(agentStdout, { jsonrpc: '2.0', id: req.id, result: { sessionId: `sess-${nextId++}` } });
     } else if (req.method === 'session/prompt') {
-      // 流式通知 + 最终应答
+      // 模拟真实 ACP agent：先请求权限，再流式通知 + 最终应答 —— client 必须应答权限请求，否则挂死
+      writeMessage(agentStdout, {
+        jsonrpc: '2.0',
+        id: 9001,
+        method: 'session/request_permission',
+        params: { sessionId: 'sess-1', options: [], requestId: 9001 },
+      });
       writeMessage(agentStdout, {
         jsonrpc: '2.0',
         method: 'session/update',
@@ -37,12 +46,12 @@ function fakeAgent() {
       writeMessage(agentStdout, { jsonrpc: '2.0', id: req.id, result: { stopReason: 'end_turn' } });
     }
   });
-  return { proc, seen };
+  return { proc, seen, replies };
 }
 
 describe('ACP 客户端（stdio NDJSON，M3 前骨架）', () => {
   it('initialize → session/new → session/prompt（增量收集为 finalMessage + 事件）', async () => {
-    const { proc, seen } = fakeAgent();
+    const { proc, seen, replies } = fakeAgent();
     const client = new AcpClient(proc);
 
     await client.initialize({ name: 'agentos', version: '0.1.0' });
@@ -59,6 +68,10 @@ describe('ACP 客户端（stdio NDJSON，M3 前骨架）', () => {
     expect(seen.map((s) => s.method)).toEqual(['initialize', 'session/new', 'session/prompt']);
     const promptParams = seen[2]!.params as { prompt: Array<{ type: string; text: string }> };
     expect(promptParams.prompt[0]!.text).toBe('实现 X');
+    // 防挂死：agent 的 session/request_permission 请求必须被应答（默认拒绝 cancel）
+    const permReply = replies.find((r) => r['id'] === 9001) as { result?: { outcome?: { type?: string } } } | undefined;
+    expect(permReply).toBeDefined();
+    expect(permReply!.result!.outcome!.type).toBe('cancel');
   });
 });
 

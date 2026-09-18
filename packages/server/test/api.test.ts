@@ -177,4 +177,59 @@ describe('AgentOS REST API', () => {
     const installUnknown = await server.app.inject({ method: 'POST', url: '/api/agents/nope/install', payload: {} });
     expect(installUnknown.statusCode).toBe(404);
   });
+
+  it('安全面：bypass 类权限参数被 API 层拒绝', async () => {
+    const tasks = await server.app.inject({ method: 'GET', url: '/api/tasks' });
+    const taskId = (tasks.json() as Array<{ id: string }>)[0]!.id;
+    const res = await server.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/run`,
+      payload: { agentId: 'claude', permissionFlags: ['--dangerously-skip-permissions'] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain('拒绝危险权限参数');
+  });
+
+  it('followup：缺 message 400；正常跟进产生链式 Capsule', async () => {
+    const tasks = await server.app.inject({ method: 'GET', url: '/api/tasks' });
+    const taskId = (tasks.json() as Array<{ id: string }>)[0]!.id;
+    const bad = await server.app.inject({ method: 'POST', url: `/api/tasks/${taskId}/followup`, payload: {} });
+    expect(bad.statusCode).toBe(400);
+    const ok = await server.app.inject({ method: 'POST', url: `/api/tasks/${taskId}/followup`, payload: { message: '把日志改成英文' } });
+    expect(ok.statusCode).toBe(200);
+    expect((ok.json() as { capsule?: { origin: { resumedFromCapsuleId?: string } } }).capsule!.origin.resumedFromCapsuleId).toBeTruthy();
+  });
+
+  it('imports：列出 → 保存 Capsule → 由 Capsule 创建接管任务', async () => {
+    const { mkdirSync, mkdtempSync, writeFileSync } = await import('node:fs');
+    const dir = mkdtempSync(path.join(tmpdir(), 'agentos-api-imp-'));
+    mkdirSync(path.join(dir, 'proj'), { recursive: true });
+    const lines = [
+      JSON.stringify({ type: 'user', sessionId: 's-9', cwd: repoRoot, message: { content: '导入的目标：修复 Z' } }),
+      JSON.stringify({ type: 'assistant', sessionId: 's-9', message: { content: [{ type: 'text', text: '已定位 Z 的根因' }] } }),
+    ];
+    writeFileSync(path.join(dir, 'proj', 's-9.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+    const list = await server.app.inject({ method: 'GET', url: `/api/imports/claude?dir=${encodeURIComponent(dir)}` });
+    expect(list.statusCode).toBe(200);
+    const sessions = list.json() as Array<{ file: string; sessionId: string }>;
+    const target = sessions.find((s) => s.sessionId === 's-9')!;
+    expect(target).toBeDefined();
+
+    const badSource = await server.app.inject({ method: 'GET', url: '/api/imports/nope' });
+    expect(badSource.statusCode).toBe(400);
+
+    const save = await server.app.inject({ method: 'POST', url: '/api/imports/save', payload: { source: 'claude', file: target.file } });
+    expect(save.statusCode).toBe(201);
+    const capsuleId = (save.json() as { id: string }).id;
+
+    const projects = await server.app.inject({ method: 'GET', url: '/api/projects' });
+    const projectId = (projects.json() as Array<{ id: string }>)[0]!.id;
+    const task = await server.app.inject({ method: 'POST', url: '/api/tasks', payload: { projectId, capsuleId } });
+    expect(task.statusCode).toBe(201);
+    expect((task.json() as { objective: string }).objective).toBe('导入的目标：修复 Z');
+
+    const missingCapsule = await server.app.inject({ method: 'POST', url: '/api/tasks', payload: { projectId, capsuleId: 'cap_missing' } });
+    expect(missingCapsule.statusCode).toBe(404);
+  });
 });

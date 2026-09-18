@@ -49,12 +49,17 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     expect(types).toContain('tool_result');
     expect(types).toContain('result');
     expect(finalMessage).toBe('任务完成：已修复 X');
-    // 参数构造：-p + stream-json + 权限透传
-    const args = a.def.buildRunArgs('做任务', { allowedTools: ['Read', 'Edit'], permissionFlags: ['--permission-mode', 'acceptEdits'] });
-    expect(args[0]).toBe('-p');
-    expect(args).toContain('--output-format');
-    expect(args.join(' ')).toContain('--allowedTools Read,Edit');
-    expect(args.join(' ')).toContain('--permission-mode acceptEdits');
+    // 提示词通道：stdin（官方管道模式），参数只含 flags
+    const inv = a.def.buildRunArgs('做任务', { allowedTools: ['Read', 'Edit'], permissionFlags: ['--permission-mode', 'acceptEdits'] });
+    expect(inv.stdin).toBe('做任务');
+    expect(inv.args[0]).toBe('-p');
+    expect(inv.args.join(' ')).toContain('--allowedTools Read,Edit');
+    expect(inv.args.join(' ')).toContain('--permission-mode acceptEdits');
+    expect(inv.args.join(' ')).not.toContain('做任务');
+    // resume：--resume <id> + stdin
+    const rinv = a.def.buildResumeArgs!('abc-123', '继续', {});
+    expect(rinv.stdin).toBe('继续');
+    expect(rinv.args.join(' ')).toContain('--resume abc-123');
   });
 
   it('Claude 坏行容错：垃圾行不炸解析器', () => {
@@ -63,17 +68,21 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     expect(ctx.sessionRef).toBe('abc-123');
   });
 
-  it('Codex --json：thread_id 捕获 + agent_message 文本 + resume 参数', () => {
+  it('Codex --json：thread_id 捕获 + agent_message 文本 + stdin 通道（exec -）', () => {
     const a = createCodexAdapter();
     const { ctx, finalMessage } = feed(a.def, codexLines);
     expect(ctx.sessionRef).toBe('th-9');
     expect(finalMessage).toBe('测试全部通过，修复完成');
     expect(ctx.events.some((e) => e.type === 'tool_call')).toBe(true);
-    const rargs = a.def.buildResumeArgs!('th-9', '继续', {});
-    expect(rargs).toEqual(['exec', 'resume', 'th-9', '--json', '继续']);
+    const inv = a.def.buildRunArgs('继续任务', {});
+    expect(inv.stdin).toBe('继续任务');
+    expect(inv.args).toContain('-');
+    const rinv = a.def.buildResumeArgs!('th-9', '继续', {});
+    expect(rinv.args.join(' ')).toContain('resume th-9');
+    expect(rinv.stdin).toBe('继续');
   });
 
-  it('Gemini 单块 JSON（response/stats）+ 无原生 resume', async () => {
+  it('Gemini：短提示词位置参数；长提示词走 @file 文件通道（规避上游 stdin 重复 bug）', async () => {
     const a = createGeminiAdapter();
     const ctx = createParseContext();
     const raw = '{"response":"分析完成：问题在缓存层","stats":{"tokens":100}}';
@@ -83,9 +92,20 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     expect(ctx.sessionRef).toBeUndefined(); // 无官方 session id
     expect(a.supportsResume()).toBe(false);
     await expect(a.resume('x', 'p')).rejects.toBeInstanceOf(AgentNotSupportedError);
+
+    const short = a.def.buildRunArgs('短任务', {});
+    expect(short.args[0]).toBe('-p');
+    expect(short.args).toContain('短任务');
+    expect(short.filePrompt).toBeUndefined();
+
+    const long = 'x'.repeat(8000);
+    const big = a.def.buildRunArgs(long, {});
+    expect(big.filePrompt).toBe(long);
+    expect(big.args.join(' ')).toContain('@.agentos/PROMPT.md');
+    expect(big.args.join(' ')).not.toContain(long);
   });
 
-  it('OpenCode：sessionID 捕获 + 文本事件 + resume 参数（注意 -p 是密码不是 prompt）', () => {
+  it('OpenCode：stdin 通道 + sessionID 捕获 + resume 参数（注意 -p 是密码不是 prompt）', () => {
     const a = createOpencodeAdapter();
     const { ctx, finalMessage } = feed(a.def, [
       '{"type":"session","sessionID":"ses_1"}',
@@ -93,9 +113,13 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     ]);
     expect(ctx.sessionRef).toBe('ses_1');
     expect(finalMessage).toBe('opencode 完成');
-    expect(a.def.buildRunArgs('hello', {})[0]).toBe('run');
-    expect(a.def.buildRunArgs('hello', {})).not.toContain('-p');
-    expect(a.def.buildResumeArgs!('ses_1', 'go', {})).toContain('--session');
+    const inv = a.def.buildRunArgs('hello', {});
+    expect(inv.args[0]).toBe('run');
+    expect(inv.stdin).toBe('hello');
+    expect(inv.args).not.toContain('-p');
+    const rinv = a.def.buildResumeArgs!('ses_1', 'go', {});
+    expect(rinv.args).toContain('--session');
+    expect(rinv.args).toContain('ses_1');
   });
 });
 

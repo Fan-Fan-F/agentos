@@ -1,4 +1,4 @@
-import { createMessageReader, writeMessage, type JsonRpcMessage, type JsonRpcResponse } from './jsonrpc.js';
+import { createMessageReader, writeMessage, type JsonRpcMessage, type JsonRpcRequest, type JsonRpcResponse } from './jsonrpc.js';
 import type { AgentEvent, AgentAdapter, AgentProfile, AgentRunOptions, AgentRunResult } from '../adapter.js';
 import { AgentNotSupportedError } from '../adapter.js';
 import { nowIso } from '@agentos/core';
@@ -27,6 +27,7 @@ export class AcpClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private unsubscribe: () => void;
+  private notificationListeners = new Set<(method: string, params: unknown) => void>();
 
   constructor(private readonly proc: AcpProcessLike) {
     const reader = createMessageReader(proc.stdout);
@@ -34,25 +35,41 @@ export class AcpClient {
   }
 
   private handle(msg: JsonRpcMessage): void {
-    if ('id' in msg && msg.id !== null && msg.id !== undefined && ('result' in msg || 'error' in msg)) {
+    const hasId = 'id' in msg && msg.id !== null && msg.id !== undefined;
+    if (hasId && ('result' in msg || 'error' in msg)) {
       const res = msg as JsonRpcResponse;
       const p = this.pending.get(res.id as number);
       if (!p) return;
       this.pending.delete(res.id as number);
       if (res.error) p.reject(new Error(`ACP 错误 ${res.error.code}: ${res.error.message}`));
       else p.resolve(res.result);
+      return;
     }
-    // session/update 等通知由 prompt 循环内消费（见 notifications 缓冲）
-    if ('method' in msg && !('id' in msg)) {
-      for (const fn of AcpClient.notificationListeners) fn(msg.method, msg.params);
+    if (!('method' in msg)) return;
+    if (hasId) {
+      // agent → client 的请求：默认拒绝，绝不让 agent 干等（否则会话挂死）
+      this.respondToAgentRequest(msg as JsonRpcRequest & { id: number | string });
+      return;
     }
+    for (const fn of this.notificationListeners) fn(msg.method, msg.params);
   }
 
-  private static notificationListeners = new Set<(method: string, params: unknown) => void>();
+  /** 权限请求一律拒绝（默认安全档，ADR-006/SECURITY.md）；其余方法返回未实现错误。 */
+  private respondToAgentRequest(req: JsonRpcRequest & { id: number | string }): void {
+    if (req.method === 'session/request_permission') {
+      writeMessage(this.proc.stdin, { jsonrpc: '2.0', id: req.id, result: { outcome: { type: 'cancel' } } });
+      return;
+    }
+    writeMessage(this.proc.stdin, {
+      jsonrpc: '2.0',
+      id: req.id,
+      error: { code: -32601, message: `AgentOS 未启用该方法: ${req.method}` },
+    });
+  }
 
   onNotification(fn: (method: string, params: unknown) => void): () => void {
-    AcpClient.notificationListeners.add(fn);
-    return () => AcpClient.notificationListeners.delete(fn);
+    this.notificationListeners.add(fn);
+    return () => this.notificationListeners.delete(fn);
   }
 
   private request(method: string, params?: unknown): Promise<unknown> {

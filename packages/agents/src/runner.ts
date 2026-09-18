@@ -133,6 +133,8 @@ export class TaskRunner {
   private readonly store: TaskStore;
   private readonly adapters = new Map<string, AgentAdapter>();
   private readonly logs = new Map<string, EventLog>();
+  /** 进程内运行守卫：同一任务不允许并发 run/swap/fork（跨进程由 status 字段兜底） */
+  private readonly runningTasks = new Set<string>();
   private readonly defaultTimeoutMs: number;
 
   constructor(opts: RunnerOptions) {
@@ -370,34 +372,53 @@ export class TaskRunner {
     taskId: string,
     opts: { agentId?: string; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<RunOutcome> {
-    let task = await this.getTask(taskId);
-    if (task.status === 'running') throw new Error('任务已在运行中');
-    task.status = 'running';
-    task.updatedAt = nowIso();
-    await this.store.saveTask(task);
-    await this.logFor(taskId).append(taskId, 'user', 'task.started', { objective: task.objective });
+    if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
+    this.runningTasks.add(taskId);
+    try {
+      let task = await this.getTask(taskId);
+      if (task.status === 'running') throw new Error('任务已在运行中');
+      task.status = 'running';
+      task.updatedAt = nowIso();
+      await this.store.saveTask(task);
+      await this.logFor(taskId).append(taskId, 'user', 'task.started', { objective: task.objective });
 
-    const outcome = await this.runOnce(task, {
-      agentId: opts.agentId ?? 'auto',
-      mode: 'run',
-      permissionFlags: opts.permissionFlags,
-      allowedTools: opts.allowedTools,
-      timeoutMs: opts.timeoutMs,
-      signal: opts.signal,
-    });
+      const outcome = await this.runOnce(task, {
+        agentId: opts.agentId ?? 'auto',
+        mode: 'run',
+        permissionFlags: opts.permissionFlags,
+        allowedTools: opts.allowedTools,
+        timeoutMs: opts.timeoutMs,
+        signal: opts.signal,
+      });
 
-    task = await this.getTask(taskId);
-    task.runs.push(outcome.run);
-    if (outcome.capsule) task.latestCapsuleId = outcome.capsule.id;
-    task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'done' : 'failed';
-    task.updatedAt = nowIso();
-    await this.store.saveTask(task);
-    await this.logFor(taskId).append(taskId, 'system', 'task.finished', { status: task.status, exitCode: outcome.run.exitCode });
-    return outcome;
+      task = await this.getTask(taskId);
+      task.runs.push(outcome.run);
+      if (outcome.capsule) task.latestCapsuleId = outcome.capsule.id;
+      task.status = outcome.run.exitCode === 0 && !outcome.run.error ? 'done' : 'failed';
+      task.updatedAt = nowIso();
+      await this.store.saveTask(task);
+      await this.logFor(taskId).append(taskId, 'system', 'task.finished', { status: task.status, exitCode: outcome.run.exitCode });
+      return outcome;
+    } finally {
+      this.runningTasks.delete(taskId);
+    }
   }
 
   /** Agent Hot Swap：任意 → 任意（ADR-005）。新 worktree 基于源分支，改动随分支带走。 */
   async swapAgent(
+    taskId: string,
+    opts: { toAgentId: string; level?: ContextLevel; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<RunOutcome> {
+    if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
+    this.runningTasks.add(taskId);
+    try {
+      return await this.swapAgentInner(taskId, opts);
+    } finally {
+      this.runningTasks.delete(taskId);
+    }
+  }
+
+  private async swapAgentInner(
     taskId: string,
     opts: { toAgentId: string; level?: ContextLevel; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RunOutcome> {
@@ -414,7 +435,6 @@ export class TaskRunner {
     const log = this.logFor(taskId);
     await log.append(taskId, 'user', 'handoff.created', { from: fromAgent, to: opts.toAgentId, capsuleId: sourceCapsule.id });
     this.bus.publish({ from: fromAgent, to: opts.toAgentId, type: 'delegate', taskId, payload: { capsuleId: sourceCapsule.id } });
-
     const handoff = buildHandoffPrompt(sourceCapsule, opts.toAgentId, opts.level ?? 'standard');
     const toAdapter = await this.resolveAgent(opts.toAgentId);
 
@@ -518,8 +538,136 @@ export class TaskRunner {
     return { answer: result.finalMessage };
   }
 
+  /**
+   * 同会话跟进（vibe-kanban 验证过的高频需求）：向该任务最近一次运行的 agent 发送新指令。
+   * 优先原生 resume（保持会话连续）；目标 worktree 不存在时回退 repoRoot（只读预期场景）。
+   */
+  async followUp(
+    taskId: string,
+    opts: { message: string; agentId?: string; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<RunOutcome> {
+    if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
+    this.runningTasks.add(taskId);
+    try {
+      return await this.followUpInner(taskId, opts);
+    } finally {
+      this.runningTasks.delete(taskId);
+    }
+  }
+
+  private async followUpInner(
+    taskId: string,
+    opts: { message: string; agentId?: string; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<RunOutcome> {
+    const task = await this.getTask(taskId);
+    const lastRun = [...task.runs].reverse().find((r) => r.agentId);
+    const agentId = opts.agentId ?? lastRun?.agentId;
+    if (!agentId) throw new Error('没有可跟进的历史运行（先运行任务）');
+    const adapter = await this.resolveAgent(agentId);
+    const log = this.logFor(taskId);
+    await log.append(taskId, 'user', 'agent.followup', { agentId, message: truncate(opts.message, 500) });
+
+    const lastWorktree = [...task.runs].reverse().find((r) => r.worktreePath && fs.existsSync(r.worktreePath))?.worktreePath;
+    const cwd = lastWorktree ?? task.repoRoot;
+    const lastSession = [...task.runs].reverse().find((r) => r.sessionId);
+    const runOpts: AgentRunOptions = {
+      cwd,
+      timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
+      signal: opts.signal,
+      onEvent: (evt) => {
+        void log.append(taskId, agentId, `agent.${evt.type}`, evt.data);
+      },
+    };
+
+    let result: AgentRunResult;
+    if (adapter.supportsResume() && adapter.resume && lastSession?.sessionId) {
+      result = await adapter.resume(lastSession.sessionId, opts.message, runOpts);
+    } else {
+      const capsule = this.latestCapsule(task);
+      const contextMd = capsule ? compileContext(capsule, 'minimal').markdown : '';
+      result = await adapter.run(
+        `${contextMd ? `=== 任务上下文 ===\n${contextMd}=== 上下文结束 ===\n\n` : ''}## 用户新指令\n${opts.message}`,
+        runOpts,
+      );
+    }
+
+    await log.append(taskId, agentId, 'agent.result', { followup: true, exitCode: result.exitCode });
+    const committed = lastWorktree ? await this.git.checkpoint(lastWorktree, `${taskId} followup ${agentId}`) : { committed: false };
+    if (committed.committed) await log.append(taskId, 'system', 'git.checkpoint', { worktree: lastWorktree, hash: committed.hash });
+
+    const branch = lastRun?.branch;
+    let diff = { files: [], stat: '' } as { files: Array<{ path: string; change: 'added' | 'modified' | 'deleted' | 'renamed' }>; stat: string };
+    if (lastWorktree && branch) {
+      try {
+        diff = await this.git.diffAgainstBase(lastWorktree, task.baseRef);
+      } catch {
+        // worktree 状态异常时跳过 diff
+      }
+    }
+
+    const capsule = createCapsule({
+      task: { id: task.id, objective: task.objective, constraints: task.constraints, userInstructions: task.userInstructions },
+      status: result.exitCode === 0 ? 'in-progress' : 'failed',
+      origin: { agentId, sessionId: result.sessionRef, resumedFromCapsuleId: task.latestCapsuleId },
+      progress: {
+        completed: task.progress.completed,
+        remaining: task.progress.remaining,
+        decisions: task.progress.decisions,
+        rejectedApproaches: task.progress.rejectedApproaches,
+      },
+      workspace: {
+        repoRoot: task.repoRoot,
+        baseCommit: task.baseRef,
+        branch,
+        worktreePath: lastWorktree,
+        changedFiles: diff.files,
+        diffStat: diff.stat,
+        commits: lastWorktree && branch ? await this.git.commitsBetween(lastWorktree, task.baseRef) : [],
+      },
+      handoff: { fromAgent: agentId, summary: truncate(result.finalMessage, 2000) },
+      context: { keyFacts: [], environment: { platform: process.platform, node: process.version } },
+    });
+    await this.store.saveCapsule(taskId, capsule);
+
+    const fresh = await this.getTask(taskId);
+    const run: SessionRun = {
+      id: newId('run'),
+      agentId,
+      mode: 'resume',
+      sessionId: result.sessionRef,
+      branch,
+      worktreePath: lastWorktree,
+      capsuleId: capsule.id,
+      exitCode: result.exitCode,
+      startedAt: nowIso(),
+      finishedAt: nowIso(),
+      finalMessage: truncate(result.finalMessage, 2000),
+      durationMs: result.durationMs,
+    };
+    fresh.runs.push(run);
+    fresh.latestCapsuleId = capsule.id;
+    fresh.status = result.exitCode === 0 && !result.timedOut ? 'done' : 'failed';
+    fresh.updatedAt = nowIso();
+    await this.store.saveTask(fresh);
+    await log.append(taskId, 'system', 'capsule.saved', { capsuleId: capsule.id });
+    return { run, capsule, worktreePath: lastWorktree, branch, diffFiles: diff.files.length, diffStat: diff.stat };
+  }
+
   /** Session Fork：相同起点（同一 base commit + 相同目标），各自独立 worktree 并行。 */
   async forkAll(
+    taskId: string,
+    opts: { agentIds: string[]; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<Array<RunOutcome & { agentId: string }>> {
+    if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
+    this.runningTasks.add(taskId);
+    try {
+      return await this.forkAllInner(taskId, opts);
+    } finally {
+      this.runningTasks.delete(taskId);
+    }
+  }
+
+  private async forkAllInner(
     taskId: string,
     opts: { agentIds: string[]; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Array<RunOutcome & { agentId: string }>> {

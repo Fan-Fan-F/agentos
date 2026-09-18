@@ -132,7 +132,18 @@ async function renderTasks() {
         <td class="muted">${fmtTime(t.createdAt)}</td>
         <td><button data-task="${esc(t.id)}">打开</button></td>
       </tr>`).join('') || '<tr><td colspan="5" class="muted">还没有任务</td></tr>'}
-    </tbody></table></div>`;
+    </tbody></table></div>
+    <h2>导入既有会话（只读）</h2>
+    <div class="card">
+      <div class="sub">把你在裸 Claude Code / Codex CLI 里产生的会话转换为 Capsule，让任意 agent 接管历史工作。全程只读，绝不改动你的会话文件。</div>
+      <div class="row">
+        <select id="impSource" style="width:140px"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select>
+        <input id="impDir" placeholder="留空 = 默认目录（~/.claude/projects 或 ~/.codex/sessions）" style="flex:1" />
+        <button id="impList">列出会话</button>
+      </div>
+      <div id="impErr" class="err-text"></div>
+      <div id="impResults" style="margin-top:10px"></div>
+    </div>`;
   document.getElementById('createTask').onclick = async () => {
     const constraints = document.getElementById('tConstraints').value.split('\n').map((s) => s.trim()).filter(Boolean);
     try {
@@ -149,6 +160,35 @@ async function renderTasks() {
     } catch (e) { document.getElementById('tErr').textContent = e.message; }
   };
   document.querySelectorAll('[data-task]').forEach((btn) => { btn.onclick = () => { location.hash = `#/task/${btn.dataset.task}`; }; });
+  document.getElementById('impList').onclick = async () => {
+    const err = document.getElementById('impErr');
+    err.textContent = '';
+    const src = document.getElementById('impSource').value;
+    const dir = document.getElementById('impDir').value.trim();
+    try {
+      const sessions = await api(`/api/imports/${src}${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`);
+      const box = document.getElementById('impResults');
+      box.innerHTML = sessions.length
+        ? `<table><thead><tr><th>时间</th><th>预览</th><th>cwd</th><th></th></tr></thead><tbody>${sessions.slice(0, 20).map((s) => `<tr>
+            <td class="muted">${new Date(s.mtimeMs).toLocaleString()}</td>
+            <td>${esc(s.preview) || '<span class="muted">（无文本）</span>'}</td>
+            <td class="muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(s.cwd || '—')}</td>
+            <td><button data-import="${esc(s.file)}" data-src="${esc(src)}">导入并创建任务</button></td>
+          </tr>`).join('')}</tbody></table>`
+        : '<div class="muted">未找到会话文件</div>';
+      box.querySelectorAll('[data-import]').forEach((btn) => {
+        btn.onclick = async () => {
+          try {
+            const capsule = await api('/api/imports/save', { method: 'POST', body: { source: btn.dataset.src, file: btn.dataset.import } });
+            if (!state.projects.length) throw new Error('请先在 Projects 登记该会话对应的 git 仓库');
+            const task = await api('/api/tasks', { method: 'POST', body: { projectId: state.projects[0].id, capsuleId: capsule.id } });
+            toast(`已导入并创建任务 ${task.id}`);
+            location.hash = `#/task/${task.id}`;
+          } catch (e) { err.textContent = e.message; }
+        };
+      });
+    } catch (e) { err.textContent = e.message; }
+  };
 }
 
 const STATUS_LABEL = { created: '已创建', running: '运行中', interrupted: '已中断（可恢复）', done: '完成', failed: '失败' };
@@ -180,6 +220,8 @@ async function renderTaskDetail(taskId) {
       </div>
       <label>向其他 Agent 提问（会携带任务上下文，只读不改文件）</label>
       <div class="row"><input id="askQuestion" placeholder="例如：review 当前分支的实现是否存在边界问题" style="flex:1" /><button id="btnAsk">提问</button></div>
+      <label>跟进：向最近运行的 agent 发送新指令（同会话续聊，优先原生 resume）</label>
+      <div class="row"><input id="followupMsg" placeholder="例如：把错误信息改成英文，并重跑测试" style="flex:1" /><button id="btnFollowup">跟进</button></div>
       <div id="busy" class="muted" style="margin-top:8px"></div>
     </div>
     <h2>统一 Timeline <span class="muted" id="wsState"></span></h2>
@@ -228,6 +270,14 @@ async function renderTaskDetail(taskId) {
     const r = await api(`/api/tasks/${taskId}/ask`, { method: 'POST', body: { toAgentId: agentId2(), question: q } });
     busy('回答已入 Timeline');
     document.getElementById('capsuleOut').textContent = r.answer;
+  }));
+  bind('btnFollowup', guard(async () => {
+    const m = document.getElementById('followupMsg').value.trim();
+    if (!m) throw new Error('请输入跟进指令');
+    busy('跟进中…（同会话续聊）');
+    const r = await api(`/api/tasks/${taskId}/followup`, { method: 'POST', body: { message: m } });
+    busy(`跟进完成：exit=${r.run.exitCode}，Capsule: ${r.capsule?.id ?? '—'}`);
+    refreshCapsuleAndDiff();
   }));
   bind('btnCapsule', () => refreshCapsuleAndDiff(true));
   bind('btnDiff', () => refreshCapsuleAndDiff());

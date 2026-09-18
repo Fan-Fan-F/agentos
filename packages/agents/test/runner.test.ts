@@ -206,6 +206,34 @@ describe('TaskRunner 引擎闭环', () => {
     expect(outcome.capsule!.progress.rejectedApproaches[0]!.approach).toBe('方案 A');
   });
 
+  it('followUp：同会话续聊走原生 resume，产生链式 Capsule 并入 Timeline', async () => {
+    const runner = makeRunner();
+    const claude = runner.adapterFor('claude') as StubAdapter;
+    const task = await runner.createTask({ repoRoot, objective: '实现 X 功能' });
+    await runner.runTask(task.id, { agentId: 'claude' });
+    const resumedBefore = claude.calls.filter((c) => c.resumed).length;
+
+    const r = await runner.followUp(task.id, { message: '把日志改成英文并重跑测试' });
+    expect(claude.calls.filter((c) => c.resumed).length).toBe(resumedBefore + 1);
+    expect(claude.calls.at(-1)!.prompt).toContain('把日志改成英文');
+    expect(r.capsule!.origin.resumedFromCapsuleId).toBeTruthy();
+    expect(r.capsule!.origin.agentId).toBe('claude');
+    const after = await runner.getTask(task.id);
+    expect(after.status).toBe('done');
+    expect(after.runs.at(-1)!.mode).toBe('resume');
+    const events = await runner.logFor(task.id).readAll();
+    expect(events.some((e) => e.type === 'agent.followup')).toBe(true);
+  });
+
+  it('并发守卫：同一任务不允许同时运行两次', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: '实现 X 功能' });
+    // stub 立即返回，用 Promise 竞态模拟并发：第二次调用必须被拒
+    const p1 = runner.runTask(task.id, { agentId: 'claude' });
+    await expect(runner.runTask(task.id, { agentId: 'codex' })).rejects.toThrow(/已在运行/);
+    await p1;
+  });
+
   it('swap 时向不存在的 capsule 拒绝', async () => {
     const runner = makeRunner();
     const task = await runner.createTask({ repoRoot, objective: 'x' });

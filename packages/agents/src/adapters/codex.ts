@@ -1,33 +1,43 @@
-import { CliHeadlessAdapter } from '../cliHeadless.js';
+import { CliHeadlessAdapter, type PromptInvocation } from '../cliHeadless.js';
 import { profileFor } from '../catalog.js';
 
-/** Codex CLI 适配器（codex exec --json；thread_id 来自 thread.started，见 docs/research/04 §2）。 */
+/**
+ * Codex CLI 适配器（codex exec --json；thread_id 来自 thread.started，见 docs/research/04 §2）。
+ * 提示词走 stdin（官方 `codex exec -`；stdin 必须关闭否则会挂起 —— spawn 层统一 end()）。
+ */
 export function createCodexAdapter(binary = 'codex'): CliHeadlessAdapter {
   return new CliHeadlessAdapter({
     id: 'codex',
     profile: profileFor('codex'),
     binary,
-    buildRunArgs(prompt, opts) {
-      return [
-        'exec',
-        '--json',
-        '--skip-git-repo-check',
-        ...(opts?.permissionFlags ?? []),
-        ...(opts?.model ? ['-m', opts.model] : []),
-        ...(opts?.extraArgs ?? []),
-        prompt,
-      ];
+    npmPackage: '@openai/codex',
+    buildRunArgs(prompt, opts): PromptInvocation {
+      return {
+        args: [
+          'exec',
+          '--json',
+          '--skip-git-repo-check',
+          ...(opts?.permissionFlags ?? []),
+          ...(opts?.model ? ['-m', opts.model] : []),
+          ...(opts?.extraArgs ?? []),
+          '-',
+        ],
+        stdin: prompt,
+      };
     },
-    buildResumeArgs(sessionRef, prompt, opts) {
-      return [
-        'exec',
-        'resume',
-        sessionRef,
-        '--json',
-        ...(opts?.permissionFlags ?? []),
-        ...(opts?.extraArgs ?? []),
-        prompt,
-      ];
+    buildResumeArgs(sessionRef, prompt, opts): PromptInvocation {
+      return {
+        args: [
+          'exec',
+          'resume',
+          sessionRef,
+          '--json',
+          ...(opts?.permissionFlags ?? []),
+          ...(opts?.extraArgs ?? []),
+          '-',
+        ],
+        stdin: prompt,
+      };
     },
     parseLine(line, ctx) {
       let obj: Record<string, unknown>;

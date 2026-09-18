@@ -12,6 +12,8 @@ export interface SpawnCaptureOptions {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** 写入子进程 stdin 并关闭（提示词通道，避免命令行长度/转义问题） */
+  stdin?: string;
   /** 每行 stdout 回调（用于流式解析 JSONL） */
   onLine?: (line: string) => void;
 }
@@ -59,6 +61,15 @@ export function spawnCapture(cmd: string, args: string[], opts: SpawnCaptureOpti
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
+    if (typeof opts.stdin === 'string') {
+      child.stdin?.on('error', () => {
+        /* 子进程提前退出导致 EPIPE：忽略 */
+      });
+      child.stdin?.end(opts.stdin);
+    } else {
+      // 不写 stdin 也必须关闭，避免等 stdin 的 CLI（codex exec）挂起
+      child.stdin?.end();
+    }
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
       stdoutRest += chunk;
