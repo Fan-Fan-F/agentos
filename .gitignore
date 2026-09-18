@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.tsbuildinfo
+data/
+.agentos-home/
+*.log
+.DS_Store
+Thumbs.db
