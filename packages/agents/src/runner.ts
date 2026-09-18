@@ -791,6 +791,25 @@ export class TaskRunner {
     return recovered;
   }
 
+  /** 删除任务：清理其 worktree（尽力而为）并移除任务目录。长期使用的数据管理能力。 */
+  async deleteTask(taskId: string): Promise<{ worktreesRemoved: number }> {
+    if (this.runningTasks.has(taskId)) throw new Error('任务正在运行中，无法删除');
+    const task = await this.getTask(taskId);
+    let worktreesRemoved = 0;
+    for (const run of task.runs) {
+      if (!run.worktreePath || !fs.existsSync(run.worktreePath)) continue;
+      try {
+        await this.git.removeWorktree(task.repoRoot, run.worktreePath, true);
+        worktreesRemoved++;
+      } catch {
+        // worktree 可能已被用户手动移除；继续
+      }
+    }
+    fs.rmSync(this.store.taskDir(taskId), { recursive: true, force: true });
+    this.logs.delete(taskId);
+    return { worktreesRemoved };
+  }
+
   buildTaskPrompt(task: TaskRecord): string {
     const parts = [`# 任务\n${task.objective}`];
     if (task.constraints.length) parts.push(`## 约束\n${task.constraints.map((c) => `- ${c}`).join('\n')}`);

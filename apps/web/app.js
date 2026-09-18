@@ -1,16 +1,20 @@
-/* AgentOS Web UI（M1 Minimal，ADR-008）：原生 JS，零构建、零 CDN、可离线。 */
+/* AgentOS Web UI v3 — ChatGPT 风格克制审美；零构建、零 CDN、可离线。 */
 'use strict';
 
+const $ = (id) => document.getElementById(id);
 const state = {
+  meta: null,
+  settings: {},
   agents: [],
   projects: [],
   tasks: [],
   currentTaskId: null,
   ws: null,
   events: [],
+  activeTab: 'timeline',
 };
 
-const main = document.getElementById('main');
+/* ---------------- 基础设施 ---------------- */
 
 async function api(path, options) {
   const res = await fetch(path, {
@@ -27,162 +31,297 @@ async function api(path, options) {
 
 function toast(msg, isError = false) {
   const el = document.createElement('div');
-  el.className = 'toast';
-  el.style.borderColor = isError ? 'var(--err)' : 'var(--accent)';
+  el.className = 'toast' + (isError ? ' err' : '');
   el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 5000);
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4200);
 }
 
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
-
 function fmtTime(ts) { return (ts || '').replace('T', ' ').slice(5, 19); }
+function relTime(ts) {
+  if (!ts) return '';
+  const d = Date.now() - new Date(ts).getTime();
+  if (d < 60e3) return '刚刚';
+  if (d < 3600e3) return `${Math.floor(d / 60e3)} 分钟前`;
+  if (d < 86400e3) return `${Math.floor(d / 3600e3)} 小时前`;
+  return `${Math.floor(d / 86400e3)} 天前`;
+}
+const STATUS_META = {
+  created: { label: '已创建', cls: '' },
+  running: { label: '运行中', cls: 'info pulse' },
+  interrupted: { label: '已中断 · 可恢复', cls: 'warn' },
+  done: { label: '已完成', cls: 'ok' },
+  failed: { label: '失败', cls: 'err' },
+};
+function statusBadge(s) {
+  const m = STATUS_META[s] || { label: s, cls: '' };
+  return `<span class="badge ${m.cls}"><span class="dot-i"></span>${esc(m.label)}</span>`;
+}
+function openModal(id) { $(id).classList.remove('hidden'); }
+function closeModal(id) { $(id).classList.add('hidden'); }
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-close]');
+  if (t) closeModal(t.dataset.close);
+});
 
-/* ---------------- Agents ---------------- */
+/* ---------------- 主题（服务端持久化） ---------------- */
 
-async function renderAgents() {
-  main.innerHTML = '<h1>🤖 Agents</h1><div class="sub">本机自动发现（只读扫描：PATH / npm 全局 / 家目录标记）。绝不读取凭据、不执行你的 agent。</div><div id="agentGrid" class="grid"></div><div class="row" style="margin-top:14px"><button id="deepScan">🔍 深度检测（执行 --version，需你点击才发生）</button><span id="scanNote" class="muted"></span></div>';
-  await loadAgents(false);
-  document.getElementById('deepScan').onclick = async () => {
-    document.getElementById('scanNote').textContent = '检测中…';
-    await loadAgents(true);
-    document.getElementById('scanNote').textContent = '完成';
-  };
+async function initTheme() {
+  const saved = localStorage.getItem('agentos.theme');
+  applyTheme(saved || state.settings.theme || 'system');
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if ((localStorage.getItem('agentos.theme') || state.settings.theme || 'system') === 'system') applyTheme('system');
+    });
+  }
+}
+function applyTheme(mode) {
+  const system = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  document.documentElement.dataset.theme = mode === 'system' ? system : mode;
+  localStorage.setItem('agentos.theme', mode);
+  document.querySelectorAll('#themeSeg button').forEach((b) => b.classList.toggle('on', b.dataset.theme === mode));
+}
+async function setTheme(mode) {
+  applyTheme(mode);
+  try { state.settings = await api('/api/settings', { method: 'PUT', body: { ...state.settings, theme: mode } }); } catch { /* 离线也允许 */ }
 }
 
-async function loadAgents(probe) {
-  state.agents = await api(`/api/agents?refresh=1${probe ? '&probe=1' : ''}`);
-  const grid = document.getElementById('agentGrid');
-  if (!grid) return;
-  grid.innerHTML = state.agents.map((a) => {
-    const installed = a.status === 'installed';
-    const authBadge = a.auth === 'ok' ? '<span class="badge ok">已登录标记</span>' : a.auth === 'required' ? '<span class="badge err">需要登录</span>' : '<span class="badge mut">登录未知</span>';
-    return `<div class="card">
-      <div class="row" style="justify-content:space-between">
-        <strong>${esc(a.name)}</strong>
-        ${installed ? '<span class="badge ok">Installed</span>' : '<span class="badge err">Not Installed</span>'}
+/* ---------------- 向导（首次使用） ---------------- */
+
+function onboarded() {
+  if (localStorage.getItem('agentos.onboarded')) return;
+  showOnboardStep(0);
+}
+let onboardStep = 0;
+function showOnboardStep(i) {
+  onboardStep = i;
+  openModal('onboarding');
+  $('onboardDots').innerHTML = [0, 1, 2].map((n) => `<span class="dot ${n <= i ? 'on' : ''}"></span>`).join('');
+  $('onboardNext').textContent = i === 2 ? '完成' : '下一步';
+  $('onboardSkip').textContent = i === 0 ? '跳过导览' : '上一步';
+  const body = $('onboardBody');
+  if (i === 0) {
+    body.innerHTML = `
+      <div class="onboard-hero">
+        <div class="logo">A</div>
+        <h2>欢迎来到 AgentOS</h2>
+        <p>在一个地方运行、切换、并行编排你机器上已有的每一个 AI Coding Agent。</p>
       </div>
-      <div class="muted" style="margin:8px 0">
-        ${a.version ? `v${esc(a.version)} · ` : ''}${a.npmPackage ? `npm: ${esc(a.npmPackage)}` : ''}
+      <div class="onboard-points">
+        <div class="onboard-point"><span class="pt-ic">🔒</span><span><b>本地优先</b> — 代码与数据全部留在本机，不上传任何服务器。</span></div>
+        <div class="onboard-point"><span class="pt-ic">🤝</span><span><b>不碰你的凭据</b> — 已登录的 agent 直接复用，绝不读取/迁移 Token。</span></div>
+        <div class="onboard-point"><span class="pt-ic">🔁</span><span><b>会话可携带</b> — Claude 干到一半，Codex 一键接管，无需重新解释。</span></div>
+      </div>`;
+  } else if (i === 1) {
+    body.innerHTML = `
+      <div class="onboard-hero">
+        <h2 style="font-size:16px">正在扫描本机 Agent</h2>
+        <p>只读检测：PATH / npm 全局 / 配置标记。不会执行任何程序。</p>
       </div>
-      <div class="muted">协议: ${a.protocols.join(' / ')} · 能力: ${Object.entries(a.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ') || '—'}</div>
-      <div class="row" style="margin-top:10px">${authBadge}
-        ${installed ? '' : `<button data-install="${esc(a.id)}">查看安装方案</button>`}
+      <div id="onboardAgents" class="onboard-points" style="color:var(--muted)">检测中…</div>`;
+    api('/api/agents?refresh=1').then((agents) => {
+      const el = $('onboardAgents');
+      if (!el) return;
+      state.agents = agents;
+      el.innerHTML = agents.map((a) => {
+        const ok = a.status === 'installed';
+        return `<div class="onboard-point"><span class="pt-ic">${ok ? '✅' : '⬜'}</span>
+          <span><b>${esc(a.name)}</b> — ${ok ? `已安装${a.auth === 'ok' ? '，已登录' : ''}` : '未安装（不影响其他 agent 使用）'}</span></div>`;
+      }).join('');
+    });
+  } else {
+    body.innerHTML = `
+      <div class="onboard-hero">
+        <h2 style="font-size:16px">三步开始第一个任务</h2>
       </div>
-      ${a.binaries.length ? `<div class="muted" style="margin-top:6px;word-break:break-all">${esc(a.binaries[0])}</div>` : ''}
-    </div>`;
-  }).join('');
-  grid.querySelectorAll('[data-install]').forEach((btn) => {
-    btn.onclick = async () => {
-      const plan = await api(`/api/agents/${btn.dataset.install}/install`, { method: 'POST', body: {} });
-      toast(`官方安装方案（需你在终端手动执行）：\n${plan.command}`, false);
-      alert(`官方来源: ${plan.source}\n\n命令:\n${plan.command}\n\n说明: ${plan.note}\n\n（AgentOS 不自动执行、不使用第三方镜像）`);
-    };
-  });
+      <div class="onboard-points">
+        <div class="onboard-point"><span class="pt-ic">1️⃣</span><span>在<b>项目</b>页登记一个 Git 仓库</span></div>
+        <div class="onboard-point"><span class="pt-ic">2️⃣</span><span>在<b>任务</b>页描述目标，选择 Agent（或交给 Auto）</span></div>
+        <div class="onboard-point"><span class="pt-ic">3️⃣</span><span>运行后可随时 <b>换人 / 跟进 / 请求评审 / 多路分叉</b></span></div>
+      </div>`;
+  }
+}
+$('onboardNext').onclick = () => {
+  if (onboardStep < 2) showOnboardStep(onboardStep + 1);
+  else { localStorage.setItem('agentos.onboarded', '1'); closeModal('onboarding'); }
+};
+$('onboardSkip').onclick = () => {
+  if (onboardStep > 0) showOnboardStep(onboardStep - 1);
+  else { localStorage.setItem('agentos.onboarded', '1'); closeModal('onboarding'); }
+};
+
+/* ---------------- 设置 ---------------- */
+
+$('btnSettings').onclick = async () => {
+  const sel = $('setDefaultAgent');
+  sel.innerHTML = '<option value="">Auto（自动路由）</option>' +
+    state.agents.filter((a) => a.status === 'installed').map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+  sel.value = state.settings.defaultAgent || '';
+  $('metaCard').innerHTML = state.meta
+    ? `版本 <b>v${esc(state.meta.version)}</b> · ${esc(state.meta.platform)} · ${esc(state.meta.node)}<br>数据目录：${esc(state.meta.dataDir)}<br>本地优先 · 数据永不上传`
+    : '';
+  openModal('settingsModal');
+};
+document.querySelectorAll('#themeSeg button').forEach((b) => { b.onclick = () => setTheme(b.dataset.theme); });
+$('setDefaultAgent').onchange = async (e) => {
+  state.settings = await api('/api/settings', { method: 'PUT', body: { ...state.settings, defaultAgent: e.target.value } });
+  toast('已保存');
+};
+
+function confirmDanger(text, onOk) {
+  $('confirmText').textContent = text;
+  openModal('confirmModal');
+  $('confirmOk').onclick = () => { closeModal('confirmModal'); onOk(); };
 }
 
-/* ---------------- Projects ---------------- */
+/* ---------------- 侧栏最近任务 ---------------- */
 
-async function renderProjects() {
-  state.projects = await api('/api/projects');
-  main.innerHTML = `<h1>📁 Projects</h1><div class="sub">登记一个真实 Git 仓库（AgentOS 在独立 worktree/分支上工作，不碰你的主工作区）。</div>
-    <div class="card">
-      <label>仓库绝对路径</label>
-      <div class="row"><input id="projPath" placeholder="例如 D:\\code\\my-project" style="flex:1" /><button class="primary" id="addProj">登记</button></div>
-      <div id="projErr" class="err-text"></div>
-    </div>
-    <div class="card"><table><thead><tr><th>名称</th><th>路径</th><th></th></tr></thead><tbody>
-      ${state.projects.length ? state.projects.map((p) => `<tr><td><strong>${esc(p.name)}</strong></td><td class="muted">${esc(p.path)}</td><td><button data-open="${esc(p.id)}">创建任务 →</button></td></tr>`).join('') : '<tr><td colspan="3" class="muted">还没有登记项目</td></tr>'}
-    </tbody></table></div>`;
-  document.getElementById('addProj').onclick = async () => {
-    const path = document.getElementById('projPath').value.trim();
-    try {
-      await api('/api/projects', { method: 'POST', body: { path } });
-      toast('项目已登记');
-      renderProjects();
-    } catch (e) { document.getElementById('projErr').textContent = e.message; }
-  };
-  document.querySelectorAll('[data-open]').forEach((btn) => {
-    btn.onclick = () => { location.hash = `#/task/new?project=${btn.dataset.open}`; };
-  });
+function renderRecents() {
+  const el = $('recentsList');
+  const recent = state.tasks.slice(0, 5);
+  el.innerHTML = recent.length
+    ? recent.map((t) => `<a href="#/task/${esc(t.id)}" title="${esc(t.objective)}">${statusDot(t.status)} ${esc(t.objective.slice(0, 26))}</a>`).join('')
+    : '<div class="recents-empty">还没有任务</div>';
+}
+function statusDot(s) {
+  const color = s === 'done' ? 'var(--accent)' : s === 'failed' ? 'var(--danger)' : s === 'running' ? 'var(--blue)' : 'var(--warn)';
+  return `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:2px"></span>`;
 }
 
-/* ---------------- Tasks ---------------- */
+/* ---------------- 视图：任务 ---------------- */
 
 async function renderTasks() {
+  setTitle('任务', '');
+  view(``);
   state.tasks = await api('/api/tasks');
   state.projects = await api('/api/projects');
-  main.innerHTML = `<h1>🗂️ Tasks</h1><div class="sub">创建任务 → Agent 工作 → Capsule → 一键换人 / Fork / 请求评审。</div>
+  const installed = state.agents.filter((a) => a.status === 'installed');
+  const projOpts = state.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.path)}</option>`).join('') || '<option value="">（先在「项目」页登记）</option>';
+  view(`
     <div class="card">
-      <label>项目</label>
-      <select id="tProject">${state.projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(p.path)}</option>`).join('') || '<option value="">（先登记项目）</option>'}</select>
-      <label>任务目标</label>
+      <div class="card-title">新建任务</div>
+      <div class="card-hint">描述目标 → 选 Agent → 运行。Agent 在独立 worktree 分支上工作，不碰你的主工作区。</div>
+      <div class="row" style="margin-bottom:10px">
+        <select id="tProject" class="input" style="flex:1">${projOpts}</select>
+        <div class="segmented" id="pathToggle"><button class="on">选项目</button><button>粘贴路径</button></div>
+      </div>
+      <div id="pathRow" class="row" style="display:none;margin-bottom:10px"><input id="tPath" class="input" placeholder="仓库绝对路径，如 D:\\code\\my-project" /></div>
+      <label class="field-label">任务目标</label>
       <textarea id="tObjective" placeholder="例如：为 utils/date.ts 补充时区转换函数并添加单元测试"></textarea>
-      <label>约束（每行一条，可选）</label>
-      <textarea id="tConstraints" style="min-height:48px" placeholder="不引入新依赖"></textarea>
-      <div class="row" style="margin-top:12px"><button class="primary" id="createTask">创建任务</button><span id="tErr" class="err-text"></span></div>
+      <label class="field-label">约束（每行一条，可选）</label>
+      <textarea id="tConstraints" style="min-height:44px" placeholder="不引入新依赖"></textarea>
+      <div class="row" style="margin-top:14px">
+        <button class="btn btn-primary" id="createTask">创建任务</button>
+        <span class="muted" style="font-size:12px">创建后可选择运行 / 换人 / 分叉</span>
+      </div>
+      <div id="tErr" class="err-text"></div>
     </div>
-    <div class="card"><table><thead><tr><th>任务</th><th>状态</th><th>最近 agent</th><th>创建时间</th><th></th></tr></thead><tbody>
-      ${state.tasks.map((t) => `<tr>
-        <td>${esc(t.objective.slice(0, 60))}${t.objective.length > 60 ? '…' : ''}</td>
-        <td><span class="badge ${t.status === 'done' ? 'ok' : t.status === 'failed' ? 'err' : 'warn'}">${esc(t.status)}</span></td>
-        <td class="muted">${esc(t.runs.length ? t.runs[t.runs.length - 1].agentId : '—')}</td>
-        <td class="muted">${fmtTime(t.createdAt)}</td>
-        <td><button data-task="${esc(t.id)}">打开</button></td>
-      </tr>`).join('') || '<tr><td colspan="5" class="muted">还没有任务</td></tr>'}
-    </tbody></table></div>
-    <h2>导入既有会话（只读）</h2>
+    ${taskTable()}
+    ${importCard(installed)}
+  `);
+  bindTaskCreate();
+  bindImport();
+  renderRecents();
+}
+
+function taskTable() {
+  if (!state.tasks.length) {
+    return `<div class="card"><div class="empty"><div class="glyph">🗂️</div><h3>还没有任务</h3><p>创建第一个任务，让本机 Agent 开始工作</p></div></div>`;
+  }
+  return `<div class="card" style="padding:6px 14px"><table><thead><tr><th>任务</th><th>状态</th><th>最近 Agent</th><th>时间</th><th></th></tr></thead><tbody>
+    ${state.tasks.map((t) => `<tr>
+      <td style="max-width:340px"><a href="#/task/${esc(t.id)}" style="color:var(--text);text-decoration:none">${esc(t.objective.slice(0, 60))}${t.objective.length > 60 ? '…' : ''}</a></td>
+      <td>${statusBadge(t.status)}</td>
+      <td class="muted">${esc(t.runs.length ? t.runs[t.runs.length - 1].agentId : '—')}</td>
+      <td class="muted" style="white-space:nowrap">${relTime(t.createdAt)}</td>
+      <td><div class="row" style="gap:6px;flex-wrap:nowrap"><a href="#/task/${esc(t.id)}"><button class="btn btn-sm">打开</button></a><button class="btn btn-sm btn-danger" data-del="${esc(t.id)}">删除</button></div></td>
+    </tr>`).join('')}
+  </tbody></table></div>`;
+}
+
+function importCard() {
+  return `
     <div class="card">
-      <div class="sub">把你在裸 Claude Code / Codex CLI 里产生的会话转换为 Capsule，让任意 agent 接管历史工作。全程只读，绝不改动你的会话文件。</div>
+      <div class="card-title">导入既有会话 <span class="badge">只读</span></div>
+      <div class="card-hint">把你在裸 Claude Code / Codex CLI 里的历史会话转成 Capsule，让任意 Agent 接管。绝不改动你的会话文件。</div>
       <div class="row">
-        <select id="impSource" style="width:140px"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select>
-        <input id="impDir" placeholder="留空 = 默认目录（~/.claude/projects 或 ~/.codex/sessions）" style="flex:1" />
-        <button id="impList">列出会话</button>
+        <select id="impSource" class="input" style="width:150px"><option value="claude">Claude Code</option><option value="codex">Codex CLI</option></select>
+        <input id="impDir" class="input" style="flex:1" placeholder="留空 = 默认目录（~/.claude/projects 或 ~/.codex/sessions）" />
+        <button class="btn" id="impList">扫描会话</button>
       </div>
       <div id="impErr" class="err-text"></div>
       <div id="impResults" style="margin-top:10px"></div>
     </div>`;
-  document.getElementById('createTask').onclick = async () => {
-    const constraints = document.getElementById('tConstraints').value.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+function bindTaskCreate() {
+  const seg = $('pathToggle');
+  if (seg) {
+    seg.querySelectorAll('button').forEach((b, i) => {
+      b.onclick = () => {
+        seg.querySelectorAll('button').forEach((x) => x.classList.remove('on'));
+        b.classList.add('on');
+        $('tProject').style.display = i === 0 ? '' : 'none';
+        $('pathRow').style.display = i === 1 ? '' : 'none';
+      };
+    });
+  }
+  const submit = async () => {
+    const usePath = $('pathRow').style.display !== 'none';
+    const constraints = $('tConstraints').value.split('\n').map((s) => s.trim()).filter(Boolean);
+    const body = {
+      objective: $('tObjective').value,
+      constraints,
+      ...(usePath ? { repoRoot: $('tPath').value.trim() } : { projectId: $('tProject').value || undefined }),
+    };
     try {
-      const task = await api('/api/tasks', {
-        method: 'POST',
-        body: {
-          projectId: document.getElementById('tProject').value || undefined,
-          objective: document.getElementById('tObjective').value,
-          constraints,
-        },
-      });
-      toast(`任务已创建: ${task.id}`);
+      const task = await api('/api/tasks', { method: 'POST', body });
+      toast(`任务已创建`);
       location.hash = `#/task/${task.id}`;
-    } catch (e) { document.getElementById('tErr').textContent = e.message; }
+    } catch (e) { $('tErr').textContent = e.message; }
   };
-  document.querySelectorAll('[data-task]').forEach((btn) => { btn.onclick = () => { location.hash = `#/task/${btn.dataset.task}`; }; });
-  document.getElementById('impList').onclick = async () => {
-    const err = document.getElementById('impErr');
+  $('createTask').onclick = submit;
+  $('tObjective').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); });
+  document.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.onclick = () => confirmDanger('删除该任务？其 worktree 与全部时间线/Capsule 数据将一并移除（分支与提交保留在仓库中）。', async () => {
+      try {
+        const r = await api(`/api/tasks/${btn.dataset.del}`, { method: 'DELETE' });
+        toast(`已删除（清理 ${r.worktreesRemoved} 个 worktree）`);
+        renderTasks();
+      } catch (e) { toast(e.message, true); }
+    });
+  });
+}
+
+function bindImport() {
+  const btn = $('impList');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const err = $('impErr');
     err.textContent = '';
-    const src = document.getElementById('impSource').value;
-    const dir = document.getElementById('impDir').value.trim();
+    const src = $('impSource').value;
+    const dir = $('impDir').value.trim();
     try {
       const sessions = await api(`/api/imports/${src}${dir ? `?dir=${encodeURIComponent(dir)}` : ''}`);
-      const box = document.getElementById('impResults');
-      box.innerHTML = sessions.length
-        ? `<table><thead><tr><th>时间</th><th>预览</th><th>cwd</th><th></th></tr></thead><tbody>${sessions.slice(0, 20).map((s) => `<tr>
-            <td class="muted">${new Date(s.mtimeMs).toLocaleString()}</td>
-            <td>${esc(s.preview) || '<span class="muted">（无文本）</span>'}</td>
-            <td class="muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(s.cwd || '—')}</td>
-            <td><button data-import="${esc(s.file)}" data-src="${esc(src)}">导入并创建任务</button></td>
-          </tr>`).join('')}</tbody></table>`
-        : '<div class="muted">未找到会话文件</div>';
-      box.querySelectorAll('[data-import]').forEach((btn) => {
-        btn.onclick = async () => {
+      const box = $('impResults');
+      if (!sessions.length) { box.innerHTML = '<div class="muted" style="font-size:13px">未找到会话文件</div>'; return; }
+      box.innerHTML = `<table><thead><tr><th>时间</th><th>预览</th><th>仓库</th><th></th></tr></thead><tbody>
+        ${sessions.slice(0, 15).map((s) => `<tr>
+          <td class="muted" style="white-space:nowrap">${new Date(s.mtimeMs).toLocaleString()}</td>
+          <td class="clip" title="${esc(s.preview)}">${esc(s.preview) || '<span class="muted">（无文本）</span>'}</td>
+          <td class="muted clip mono">${esc(s.cwd || '—')}</td>
+          <td><button class="btn btn-sm" data-import="${esc(s.file)}" data-src="${esc(src)}">导入并接管</button></td>
+        </tr>`).join('')}</tbody></table>`;
+      box.querySelectorAll('[data-import]').forEach((b) => {
+        b.onclick = async () => {
           try {
-            const capsule = await api('/api/imports/save', { method: 'POST', body: { source: btn.dataset.src, file: btn.dataset.import } });
-            if (!state.projects.length) throw new Error('请先在 Projects 登记该会话对应的 git 仓库');
+            if (!state.projects.length) throw new Error('请先登记该会话对应的 Git 仓库（项目页）');
+            const capsule = await api('/api/imports/save', { method: 'POST', body: { source: b.dataset.src, file: b.dataset.import } });
             const task = await api('/api/tasks', { method: 'POST', body: { projectId: state.projects[0].id, capsuleId: capsule.id } });
-            toast(`已导入并创建任务 ${task.id}`);
+            toast('已导入，任务已创建');
             location.hash = `#/task/${task.id}`;
           } catch (e) { err.textContent = e.message; }
         };
@@ -191,159 +330,301 @@ async function renderTasks() {
   };
 }
 
-const STATUS_LABEL = { created: '已创建', running: '运行中', interrupted: '已中断（可恢复）', done: '完成', failed: '失败' };
+/* ---------------- 视图：Agent 详情 ---------------- */
 
 async function renderTaskDetail(taskId) {
   if (state.ws) { state.ws.close(); state.ws = null; }
   state.currentTaskId = taskId;
   state.events = [];
   let data;
-  try { data = await api(`/api/tasks/${taskId}`); } catch (e) { main.innerHTML = `<h1>任务不存在</h1><p class="muted">${esc(e.message)}</p>`; return; }
+  try { data = await api(`/api/tasks/${taskId}`); } catch (e) { setTitle('任务不存在', ''); view(`<div class="card"><div class="empty"><div class="glyph">🕳️</div><h3>任务不存在</h3><p>${esc(e.message)}</p></div></div>`); return; }
   const t = data.task;
+  const lastRun = t.runs[t.runs.length - 1];
+  setTitle(t.objective.length > 28 ? t.objective.slice(0, 28) + '…' : t.objective, `
+    ${statusBadge(t.status)}
+    ${lastRun?.branch ? `<span class="badge mono">${esc(lastRun.branch)}</span>` : ''}
+    <button class="btn btn-sm btn-danger" id="btnDelTask">删除任务</button>`);
   const agents = state.agents.filter((a) => a.status === 'installed');
-  const options = agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
-  main.innerHTML = `
-    <div class="row" style="justify-content:space-between">
-      <div><h1>任务 ${esc(t.id)}</h1><div class="sub">${esc(t.objective)}</div></div>
-      <div><span class="badge ${t.status === 'done' ? 'ok' : t.status === 'failed' ? 'err' : 'warn'}" style="font-size:13px">${STATUS_LABEL[t.status] || esc(t.status)}</span></div>
-    </div>
-    <div class="card">
-      <div class="row">
-        <div style="flex:1;min-width:200px"><label>Agent</label><select id="opAgent"><option value="auto">Auto（自动路由）</option>${options}</select></div>
-        <div style="flex:1;min-width:200px"><label>换人/评审目标</label><select id="opAgent2">${options}</select></div>
+  const opts = (sel) => `<option value="auto"${sel === 'auto' ? ' selected' : ''}>Auto（自动路由）</option>` + agents.map((a) => `<option value="${esc(a.id)}"${sel === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('');
+  const agents2 = agents.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
+
+  view(`
+    <div class="view-inner">
+      <div class="card">
+        <div class="card-title">任务目标</div>
+        <div style="font-size:13.5px;margin-bottom:4px">${esc(t.objective)}</div>
+        ${t.constraints.length ? `<div class="muted" style="font-size:12.5px;margin-top:6px">约束：${t.constraints.map(esc).join(' · ')}</div>` : ''}
+        <div class="row" style="margin-top:14px">
+          <select id="opAgent" class="input" style="width:200px">${opts(state.settings.defaultAgent || 'auto')}</select>
+          <select id="opAgent2" class="input" style="width:200px">${agents2}</select>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <button class="btn btn-primary" id="btnRun">▶ 运行</button>
+          <button class="btn" id="btnSwap" title="Capsule → 上下文 → 新 Agent 接管（七问验证）">🔁 换人接管</button>
+          <button class="btn" id="btnResume" title="同 Agent 用 Capsule 续接">↩️ 恢复</button>
+          <button class="btn" id="btnFork" title="相同起点，多 Agent 并行">⑂ 分叉</button>
+        </div>
+        <label class="field-label">跟进 · 向最近运行的 Agent 发新指令（同会话续聊）</label>
+        <div class="row"><input id="followupMsg" class="input" style="flex:1" placeholder="例如：把错误信息改成英文，并重跑测试" /><button class="btn" id="btnFollowup">跟进</button></div>
+        <label class="field-label">请教其他 Agent（携带任务上下文，只读不改文件）</label>
+        <div class="row"><input id="askQuestion" class="input" style="flex:1" placeholder="例如：review 当前分支的实现是否存在边界问题" /><button class="btn" id="btnAsk">提问</button></div>
+        <div id="busy" class="muted" style="font-size:12.5px;margin-top:10px;min-height:18px"></div>
       </div>
-      <div class="row" style="margin-top:12px">
-        <button class="primary" id="btnRun">▶ 运行</button>
-        <button id="btnSwap">🔁 换人接管（Swap）</button>
-        <button id="btnResume">↩️ 恢复（Resume）</button>
-        <button id="btnFork">⑂ Fork 到所选（相同起点并行）</button>
+      <div class="segmented" style="margin-bottom:12px" id="detailTabs">
+        <button data-tab="timeline" class="on">时间线</button>
+        <button data-tab="capsule">Capsule</button>
+        <button data-tab="diff">Diff</button>
       </div>
-      <label>向其他 Agent 提问（会携带任务上下文，只读不改文件）</label>
-      <div class="row"><input id="askQuestion" placeholder="例如：review 当前分支的实现是否存在边界问题" style="flex:1" /><button id="btnAsk">提问</button></div>
-      <label>跟进：向最近运行的 agent 发送新指令（同会话续聊，优先原生 resume）</label>
-      <div class="row"><input id="followupMsg" placeholder="例如：把错误信息改成英文，并重跑测试" style="flex:1" /><button id="btnFollowup">跟进</button></div>
-      <div id="busy" class="muted" style="margin-top:8px"></div>
-    </div>
-    <h2>统一 Timeline <span class="muted" id="wsState"></span></h2>
-    <div class="card"><ul class="timeline" id="timeline"><li class="muted">（尚无事件）</li></ul></div>
-    <div class="grid">
-      <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Capsule</h2><button id="btnCapsule">查看最新</button></div><pre id="capsuleOut" class="muted">任务运行后会生成 Universal Session Capsule。</pre></div>
-      <div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Git Diff</h2><button id="btnDiff">查看变更</button></div><pre id="diffOut" class="muted">任务运行后会显示分支上的变更文件与统计。</pre></div>
-    </div>`;
+      <div id="tabBody"></div>
+    </div>`);
 
-  const busy = (msg) => { document.getElementById('busy').textContent = msg || ''; };
+  $('btnDelTask').onclick = () => confirmDanger('删除该任务及其全部本地数据？（worktree 会清理，分支与提交保留）', async () => {
+    try { await api(`/api/tasks/${taskId}`, { method: 'DELETE' }); toast('已删除'); location.hash = '#/tasks'; } catch (e) { toast(e.message, true); }
+  });
 
-  const bind = (id, fn) => { const el = document.getElementById(id); if (el) el.onclick = fn; };
-  const agentId = () => document.getElementById('opAgent').value;
-  const agentId2 = () => document.getElementById('opAgent2').value;
+  const busy = (m) => { $('busy').textContent = m || ''; };
+  const guard = (fn) => async () => {
+    try { await fn(); } catch (e) { toast(e.message, true); } finally { busy(''); }
+  };
+  const agentId = () => $('opAgent').value;
+  const agentId2 = () => $('opAgent2').value;
+  const post = (path, body) => api(`/api/tasks/${taskId}/${path}`, { method: 'POST', body });
 
-  bind('btnRun', guard(async () => {
-    busy('运行中…（事件实时推送）');
-    const r = await api(`/api/tasks/${taskId}/run`, { method: 'POST', body: { agentId: agentId() } });
-    busy(`运行完成：exit=${r.run.exitCode}，变更 ${r.diffFiles} 个文件。Capsule: ${r.capsule?.id ?? '—'}`);
-    refreshCapsuleAndDiff();
-  }));
-  bind('btnSwap', guard(async () => {
-    busy('交接中…（Capsule → Context → 新 Agent → 七问验证）');
-    const r = await api(`/api/tasks/${taskId}/swap`, { method: 'POST', body: { toAgentId: agentId2() } });
-    busy(`接管完成：${r.run.agentId} exit=${r.run.exitCode}。Capsule: ${r.capsule?.id ?? '—'}`);
-    refreshCapsuleAndDiff();
-  }));
-  bind('btnResume', guard(async () => {
+  $('btnRun').onclick = guard(async () => {
+    busy('运行中…（事件实时推送，可随时关闭窗口回来查看）');
+    const r = await post('run', { agentId: agentId() });
+    busy(`完成：exit=${r.run.exitCode} · ${r.diffFiles} 个文件变更${r.capsule ? ' · Capsule 已保存' : ''}`);
+    loadTab();
+  });
+  $('btnSwap').onclick = guard(async () => {
+    busy('交接中… Capsule → 上下文编译 → 新 worktree → 七问验证');
+    const r = await post('swap', { toAgentId: agentId2() });
+    busy(`接管完成：${r.run.agentId} exit=${r.run.exitCode}${r.capsule ? ' · 新 Capsule 已链接' : ''}`);
+    loadTab();
+  });
+  $('btnResume').onclick = guard(async () => {
     busy('恢复中…');
-    const r = await api(`/api/tasks/${taskId}/resume`, { method: 'POST', body: { agentId: agentId() === 'auto' ? undefined : agentId() } });
+    const r = await post('resume', { agentId: agentId() === 'auto' ? undefined : agentId() });
     busy(`恢复完成：exit=${r.run.exitCode}`);
-    refreshCapsuleAndDiff();
-  }));
-  bind('btnFork', guard(async () => {
-    const ids = agents.map((a) => a.id).filter((id) => id !== 'auto').slice(0, 3);
-    if (!ids.length) throw new Error('没有已安装的 agent 可 Fork');
-    busy(`Fork 并行中（${ids.join(', ')}，相同起点）…`);
-    const r = await api(`/api/tasks/${taskId}/fork`, { method: 'POST', body: { agentIds: ids } });
-    busy('Fork 完成：' + r.map((x) => `${x.agentId}: exit=${x.run.exitCode}, ${x.diffFiles} 文件`).join(' | '));
-    refreshCapsuleAndDiff();
-  }));
-  bind('btnAsk', guard(async () => {
-    const q = document.getElementById('askQuestion').value.trim();
-    if (!q) throw new Error('请输入问题');
-    busy(`${agentId2()} 思考中…`);
-    const r = await api(`/api/tasks/${taskId}/ask`, { method: 'POST', body: { toAgentId: agentId2(), question: q } });
-    busy('回答已入 Timeline');
-    document.getElementById('capsuleOut').textContent = r.answer;
-  }));
-  bind('btnFollowup', guard(async () => {
-    const m = document.getElementById('followupMsg').value.trim();
+    loadTab();
+  });
+  $('btnFork').onclick = guard(async () => {
+    const ids = agents.map((a) => a.id).slice(0, 3);
+    if (!ids.length) throw new Error('没有已安装的 Agent 可分叉');
+    busy(`分叉并行中（${ids.join(', ')}，相同起点）…`);
+    const r = await post('fork', { agentIds: ids });
+    busy('分叉完成：' + r.map((x) => `${x.agentId}: exit=${x.run.exitCode}, ${x.diffFiles} 文件`).join(' | '));
+    loadTab();
+  });
+  const submitFollowup = guard(async () => {
+    const m = $('followupMsg').value.trim();
     if (!m) throw new Error('请输入跟进指令');
     busy('跟进中…（同会话续聊）');
-    const r = await api(`/api/tasks/${taskId}/followup`, { method: 'POST', body: { message: m } });
-    busy(`跟进完成：exit=${r.run.exitCode}，Capsule: ${r.capsule?.id ?? '—'}`);
-    refreshCapsuleAndDiff();
-  }));
-  bind('btnCapsule', () => refreshCapsuleAndDiff(true));
-  bind('btnDiff', () => refreshCapsuleAndDiff());
+    const r = await post('followup', { message: m });
+    $('followupMsg').value = '';
+    busy(`跟进完成：exit=${r.run.exitCode}`);
+    loadTab();
+  });
+  $('btnFollowup').onclick = submitFollowup;
+  $('followupMsg').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitFollowup(); });
+  $('btnAsk').onclick = guard(async () => {
+    const q = $('askQuestion').value.trim();
+    if (!q) throw new Error('请输入问题');
+    busy(`${agentId2()} 思考中…`);
+    const r = await post('ask', { toAgentId: agentId2(), question: q });
+    busy('回答已入时间线');
+    switchTab('capsule');
+    state.tabOverride = { capsule: r.answer };
+    loadTab();
+  });
+  $('askQuestion').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnAsk').click(); });
 
-  async function refreshCapsuleAndDiff(capsuleOnly) {
-    try {
+  // Tabs
+  const tabBody = $('tabBody');
+  function switchTab(tab) {
+    state.activeTab = tab;
+    document.querySelectorAll('#detailTabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+    renderTab();
+  }
+  async function renderTab() {
+    const tab = state.activeTab;
+    if (tab === 'timeline') {
+      if (!state.events.length) { tabBody.innerHTML = `<div class="card"><div class="empty"><div class="glyph">⚡</div><h3>时间线还是空的</h3><p>点击「运行」开始，事件会实时出现在这里</p></div></div>`; return; }
+      tabBody.innerHTML = `<div class="card" style="padding:10px 16px"><ul class="timeline">${state.events.map(renderEvent).join('')}</ul></div>`;
+      const ul = tabBody.querySelector('.timeline');
+      ul.scrollTop = ul.scrollHeight;
+      const box = tabBody.querySelector('.card'); box.scrollTop = box.scrollHeight;
+    } else if (tab === 'capsule') {
+      const override = state.tabOverride?.capsule;
+      if (override) { tabBody.innerHTML = `<div class="card"><div class="card-title">Agent 回答</div><pre style="max-height:none">${esc(override)}</pre></div>`; return; }
       const md = await fetch(`/api/tasks/${taskId}/capsule?format=md`).then((r) => (r.ok ? r.text() : null));
-      if (md) document.getElementById('capsuleOut').textContent = md;
-    } catch { /* 尚无 capsule */ }
-    if (!capsuleOnly) {
+      tabBody.innerHTML = md
+        ? `<div class="card"><div class="card-title">Universal Session Capsule</div><div class="card-hint">人可读的交接文档 · 保存于任务数据目录</div><pre style="max-height:none">${esc(md)}</pre></div>`
+        : `<div class="card"><div class="empty"><div class="glyph">📦</div><h3>还没有 Capsule</h3><p>任务运行一次后自动生成</p></div></div>`;
+    } else {
       try {
         const d = await api(`/api/tasks/${taskId}/diff`);
-        document.getElementById('diffOut').textContent = `${d.note || `分支 ${d.branch} · ${d.files?.length ?? 0} 个文件变更`}\n\n${d.stat || (d.files || []).map((f) => `${f.change}\t${f.path}`).join('\n')}`;
-      } catch { /* 尚无 diff */ }
+        const body = d.note ? `<div class="muted" style="font-size:13px">${esc(d.note)}</div>`
+          : `<pre style="max-height:none">${esc(`分支 ${d.branch} · ${(d.files || []).length} 个文件\n\n${d.stat || (d.files || []).map((f) => `${f.change}\t${f.path}`).join('\n')}`)}</pre>`;
+        tabBody.innerHTML = `<div class="card"><div class="card-title">Git 变更</div>${body}</div>`;
+      } catch {
+        tabBody.innerHTML = `<div class="card"><div class="empty"><div class="glyph">🌿</div><h3>还没有变更</h3><p>任务运行后展示分支上的 diff</p></div></div>`;
+      }
     }
   }
-
-  function guard(fn) {
-    return async () => {
-      try { await fn(); } catch (e) { busy(''); toast(e.message, true); }
-      finally { busy(document.getElementById('busy').textContent.replace('中…', '完成')); }
-    };
-  }
+  document.querySelectorAll('#detailTabs button').forEach((b) => { b.onclick = () => switchTab(b.dataset.tab); });
+  async function loadTab() { state.tabOverride = null; renderRecents(); renderTab(); }
 
   connectWS(taskId);
-  refreshCapsuleAndDiff();
+  renderTab();
+  renderRecents();
+}
+
+function renderEvent(e) {
+  const cls = 'tl-' + String(e.type).replace(/\./g, '_');
+  const payload = e.payload ? Object.entries(e.payload)
+    .filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .slice(0, 6)
+    .map(([k, v]) => {
+      let s = typeof v === 'string' ? v : JSON.stringify(v);
+      if (s && s.length > 110) s = s.slice(0, 110) + '…';
+      return `<b style="color:var(--text)">${esc(k)}</b> ${esc(s)}`;
+    }).join(' · ') : '';
+  const cost = e.payload?.costUsd ? `<span class="tl-cost">$${Number(e.payload.costUsd).toFixed(4)}</span>` : '';
+  return `<li class="${cls}">
+    <span class="tl-icon"></span>
+    <div class="tl-body">
+      <div class="tl-head"><span class="actor">${esc(e.actor)}</span><span class="type">${esc(e.type)}</span>${cost}<span class="time">${fmtTime(e.ts)}</span></div>
+      ${payload ? `<div class="muted" style="font-size:12px">${payload}</div>` : ''}
+    </div>
+  </li>`;
 }
 
 function connectWS(taskId) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws?taskId=${encodeURIComponent(taskId)}`);
   state.ws = ws;
-  ws.onopen = () => { const el = document.getElementById('wsState'); if (el) el.textContent = '· 实时'; };
   ws.onmessage = (m) => {
     let evt;
     try { evt = JSON.parse(m.data); } catch { return; }
-    if (evt.type === 'history') { state.events = evt.events || []; }
-    else state.events.push(evt);
-    renderTimeline();
+    if (evt.type === 'history') state.events = evt.events || [];
+    else { state.events.push(evt); }
+    if (state.activeTab === 'timeline') renderTab();
   };
-  ws.onclose = () => { const el = document.getElementById('wsState'); if (el) el.textContent = '· 已断开'; };
 }
 
-function renderTimeline() {
-  const ul = document.getElementById('timeline');
-  if (!ul) return;
-  if (!state.events.length) { ul.innerHTML = '<li class="muted">（尚无事件）</li>'; return; }
-  ul.innerHTML = state.events.map((e) => {
-    const hl = /handoff|capsule|fork|swap|checkpoint|replied|asked/.test(e.type) ? 'hl' : '';
-    const payload = e.payload ? Object.entries(e.payload).filter(([, v]) => v !== undefined && v !== null).slice(0, 4).map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 90 ? v.slice(0, 90) + '…' : JSON.stringify(v)}`).join(' · ') : '';
-    return `<li class="${hl}"><span class="t">${fmtTime(e.ts)}</span><span class="actor">${esc(e.actor)}</span><span>${esc(e.type)}</span>${payload ? `<div class="muted">${esc(payload)}</div>` : ''}</li>`;
+/* ---------------- 视图：Agents ---------------- */
+
+async function renderAgents() {
+  setTitle('Agents', `<button class="btn btn-sm" id="deepScan">🔍 深度检测</button>`);
+  view(`<div class="sub">本机自动发现（只读：PATH / npm 全局 / 配置标记）。绝不执行你的 Agent、绝不读取凭据内容。</div><div class="grid" id="agentGrid"></div>`);
+  await loadAgents(false);
+  $('deepScan').onclick = guardAsync(async () => {
+    toast('深度检测中（执行各 agent 的 --version，需你点击才发生）…');
+    await loadAgents(true);
+    toast('完成');
+  });
+}
+
+async function guardAsync(fn) {
+  try { await fn(); } catch (e) { toast(e.message, true); }
+}
+
+async function loadAgents(probe) {
+  state.agents = await api(`/api/agents?refresh=1${probe ? '&probe=1' : ''}`);
+  const grid = $('agentGrid');
+  if (!grid) return;
+  grid.innerHTML = state.agents.map((a) => {
+    const installed = a.status === 'installed';
+    const auth = a.auth === 'ok' ? '<span class="badge ok">已登录</span>' : '<span class="badge">登录状态未知</span>';
+    const caps = Object.entries(a.capabilities).filter(([, v]) => v).map(([k]) => k).join(' · ');
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="row" style="gap:10px">
+          <div class="logo" style="width:30px;height:30px;border-radius:8px;font-size:13px;background:${installed ? 'var(--accent)' : 'var(--muted)'}">${esc(a.name[0])}</div>
+          <b>${esc(a.name)}</b>
+        </div>
+        ${installed ? '<span class="badge ok"><span class="dot-i"></span>已安装</span>' : '<span class="badge">未安装</span>'}
+      </div>
+      <div class="muted" style="font-size:12px;margin:8px 0 4px">${a.version ? `v${esc(a.version)} · ` : ''}${a.npmPackage ? esc(a.npmPackage) : ''}</div>
+      <div class="muted" style="font-size:12px">能力：${esc(caps) || '—'}</div>
+      <div class="row" style="margin-top:12px">${auth}
+        ${installed ? '' : `<button class="btn btn-sm" data-install="${esc(a.id)}">安装方案</button>`}
+      </div>
+      ${a.binaries.length ? `<div class="muted mono" style="font-size:11px;margin-top:8px;word-break:break-all">${esc(a.binaries[0])}</div>` : ''}
+    </div>`;
   }).join('');
-  ul.scrollTop = ul.scrollHeight;
+  grid.querySelectorAll('[data-install]').forEach((btn) => {
+    btn.onclick = async () => {
+      const plan = await api(`/api/agents/${btn.dataset.install}/install`, { method: 'POST', body: {} });
+      confirmInfo(`官方安装方案（${plan.source}）`, `${plan.command}\n\n${plan.note}\n\nAgentOS 不自动执行、不使用第三方镜像。请在终端手动执行。`);
+    };
+  });
+}
+function confirmInfo(title, text) {
+  $('confirmText').textContent = `${title}\n${text}`;
+  $('confirmOk').textContent = '我知道了';
+  $('confirmOk').onclick = () => { closeModal('confirmModal'); $('confirmOk').textContent = '确认删除'; };
+  openModal('confirmModal');
 }
 
-/* ---------------- 路由 ---------------- */
+/* ---------------- 视图：项目 ---------------- */
 
-function route() {
-  const hash = location.hash || '#/agents';
+async function renderProjects() {
+  setTitle('项目', '');
+  state.projects = await api('/api/projects');
+  view(`
+    <div class="sub">登记真实 Git 仓库。Agent 在独立 worktree 分支工作，不碰你的主工作区。</div>
+    <div class="card">
+      <div class="row"><input id="projPath" class="input" style="flex:1" placeholder="仓库绝对路径，如 D:\\code\\my-project" /><button class="btn btn-primary" id="addProj">登记</button></div>
+      <div id="projErr" class="err-text"></div>
+    </div>
+    ${state.projects.length ? `<div class="card" style="padding:6px 14px"><table><thead><tr><th>名称</th><th>路径</th><th>登记时间</th></tr></thead><tbody>
+      ${state.projects.map((p) => `<tr><td><b>${esc(p.name)}</b></td><td class="muted mono clip" style="max-width:380px">${esc(p.path)}</td><td class="muted">${relTime(p.createdAt)}</td></tr>`).join('')}
+    </tbody></table></div>`
+      : `<div class="card"><div class="empty"><div class="glyph">📁</div><h3>还没有项目</h3><p>登记一个 Git 仓库即可开始</p></div></div>`}
+  `);
+  $('addProj').onclick = async () => {
+    try {
+      await api('/api/projects', { method: 'POST', body: { path: $('projPath').value.trim() } });
+      toast('项目已登记');
+      renderProjects();
+    } catch (e) { $('projErr').textContent = e.message; }
+  };
+  $('projPath').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('addProj').click(); });
+}
+
+/* ---------------- 路由与启动 ---------------- */
+
+function setTitle(title, extra) { $('pageTitle').textContent = title; $('topbarExtra').innerHTML = extra || ''; }
+function view(html) { $('view').innerHTML = `<div class="view-inner">${html}</div>`; }
+
+async function route() {
+  if (state.ws) { state.ws.close(); state.ws = null; }
+  const hash = location.hash || '#/tasks';
   const m = hash.match(/^#\/task\/([^?]+)/);
   document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', hash.startsWith(`#${a.dataset.view}`) || (m && a.dataset.view === 'tasks')));
   if (m) return renderTaskDetail(m[1]);
+  if (hash.startsWith('#/agents')) return renderAgents();
   if (hash.startsWith('#/projects')) return renderProjects();
-  if (hash.startsWith('#/tasks')) return renderTasks();
-  return renderAgents();
+  return renderTasks();
 }
-
+$('btnNewTask').onclick = () => { location.hash = '#/tasks'; setTimeout(() => $('tObjective')?.focus(), 120); };
 window.addEventListener('hashchange', route);
-route().catch((e) => { main.innerHTML = `<h1>启动失败</h1><pre>${esc(e.message)}</pre><p class="muted">请确认 API 服务已启动（npm start，默认 http://127.0.0.1:7333）。</p>`; });
+
+(async function boot() {
+  try {
+    [state.meta, state.settings] = await Promise.all([api('/api/meta'), api('/api/settings')]);
+    $('version').textContent = `v${state.meta.version}`;
+    state.agents = await api('/api/agents');
+  } catch (e) {
+    document.body.innerHTML = `<div style="display:flex;height:100vh;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#a4a4a4;font-family:sans-serif">
+      <div style="font-size:30px">🔌</div><div>无法连接 AgentOS 服务</div>
+      <div style="font-size:13px">${esc(e.message)}</div>
+      <div style="font-size:12.5px">请先启动服务：双击 AgentOS.bat，或命令行 npm run desktop</div></div>`;
+    return;
+  }
+  await initTheme();
+  await route();
+  onboarded();
+})();

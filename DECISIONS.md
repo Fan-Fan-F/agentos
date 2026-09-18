@@ -12,6 +12,7 @@
 | [ADR-006](./docs/decisions/ADR-006-read-only-discovery.md) | 发现/认证 | 只读扫描；不执行不读凭据；探测/安装显式触发 |
 | [ADR-007](./docs/decisions/ADR-007-worktree-placement.md) | worktree | 仓库外兄弟目录 `.agentos-worktrees/`，独立分支命名 |
 | [ADR-008](./docs/decisions/ADR-008-static-web-ui.md) | UI | 零构建静态 SPA 先行，React 迁移后置 |
+| [ADR-009](./docs/decisions/ADR-009-app-mode-desktop.md) | 桌面端 | App 模式窗口先行（双击启动器），Tauri 原生壳 M5 |
 
 ## 关键开放问题（后续 ADR 候选）
 

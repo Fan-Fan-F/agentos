@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -88,7 +89,35 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
   const recovered = await runner.recoverAll();
   if (recovered.length) app.log.warn({ recovered }, 'recovered interrupted tasks');
 
-  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.2.0' }));
+  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.3.0' }));
+
+  app.get('/api/meta', async () => ({
+    version: '0.3.0',
+    node: process.version,
+    platform: process.platform,
+    dataDir,
+    agentsRegistered: runner.adapterIds(),
+  }));
+
+  // ---------- 设置（长期使用：偏好持久化在数据目录，换浏览器不丢） ----------
+  app.get('/api/settings', async () => {
+    try {
+      const raw = await fsp.readFile(path.join(dataDir, 'settings.json'), 'utf8');
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return { theme: 'system' } as Record<string, unknown>;
+    }
+  });
+
+  app.put('/api/settings', async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const allowed = ['theme', 'defaultAgent', 'contextLevel'];
+    const clean: Record<string, unknown> = {};
+    for (const k of allowed) if (k in body) clean[k] = body[k];
+    await fsp.mkdir(dataDir, { recursive: true });
+    await fsp.writeFile(path.join(dataDir, 'settings.json'), JSON.stringify(clean, null, 2), 'utf8');
+    return clean;
+  });
 
   // ---------- Agents ----------
   let agentsCache: { at: number; data: DiscoveredAgent[] } | undefined;
@@ -170,6 +199,15 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const { id } = req.params as { id: string };
     await projects.delete(id);
     return { ok: true };
+  });
+
+  app.delete('/api/tasks/:id', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    try {
+      return await runner.deleteTask(id);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
   });
 
   // ---------- Tasks ----------

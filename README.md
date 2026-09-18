@@ -36,13 +36,22 @@ AgentOS 不是又一个 "Claude Code + Codex + Gemini CLI 启动器"。它要解
 
 ## 快速开始
 
+**桌面方式（推荐）**：双击根目录的 `AgentOS.bat`（Windows）或 `AgentOS.command`（macOS）——首次运行自动安装依赖并构建，然后以**独立桌面窗口**（App 模式，无边框）打开。命令行等价：
+
+```bash
+node scripts/setup.mjs   # 一键：安装依赖 + 构建 + 只读体检
+npm run desktop          # 启动服务并打开桌面窗口（默认 http://localhost:7333）
+```
+
+开发者方式：
+
 ```bash
 # 于仓库根目录（Windows 示例：D:\project\agentos）
 npm install
 npm run build
 npm test          # 单元 + 集成 + 适配器契约测试
 npm run doctor    # 只读扫描本机已装的 agent（绝不执行/触碰你的 agent）
-npm start         # 启动本地服务，浏览器打开 http://localhost:7333
+npm start         # 仅启动服务（浏览器手动打开 http://localhost:7333）
 ```
 
 > ⚠️ 隐私与安全：AgentOS 对你已装的 agent **只做存在性检测**（不执行、不读凭据、不要求重新登录、绝不迁移 Token）。

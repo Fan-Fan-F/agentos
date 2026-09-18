@@ -232,4 +232,29 @@ describe('AgentOS REST API', () => {
     const missingCapsule = await server.app.inject({ method: 'POST', url: '/api/tasks', payload: { projectId, capsuleId: 'cap_missing' } });
     expect(missingCapsule.statusCode).toBe(404);
   });
+
+  it('meta / settings / 删除任务（全流程：长期使用与数据管理）', async () => {
+    const meta = await server.app.inject({ method: 'GET', url: '/api/meta' });
+    expect(meta.statusCode).toBe(200);
+    expect(meta.json()).toMatchObject({ platform: process.platform });
+    expect((meta.json() as { dataDir: string }).dataDir).toBe(dataDir);
+
+    const put = await server.app.inject({ method: 'PUT', url: '/api/settings', payload: { theme: 'dark', defaultAgent: 'claude' } });
+    expect(put.statusCode).toBe(200);
+    const get = await server.app.inject({ method: 'GET', url: '/api/settings' });
+    expect(get.json()).toMatchObject({ theme: 'dark', defaultAgent: 'claude' });
+
+    // 创建独立任务 → 删除（worktree 清理 + 目录移除）
+    const projects = await server.app.inject({ method: 'GET', url: '/api/projects' });
+    const projectId = (projects.json() as Array<{ id: string }>)[0]!.id;
+    const created = await server.app.inject({ method: 'POST', url: '/api/tasks', payload: { projectId, objective: '待删除任务' } });
+    const tid = (created.json() as { id: string }).id;
+    const run = await server.app.inject({ method: 'POST', url: `/api/tasks/${tid}/run`, payload: { agentId: 'claude' } });
+    expect(run.statusCode).toBe(200);
+    const del = await server.app.inject({ method: 'DELETE', url: `/api/tasks/${tid}` });
+    expect(del.statusCode).toBe(200);
+    expect((del.json() as { worktreesRemoved: number }).worktreesRemoved).toBeGreaterThanOrEqual(1);
+    const gone = await server.app.inject({ method: 'GET', url: `/api/tasks/${tid}` });
+    expect(gone.statusCode).toBe(404);
+  });
 });

@@ -28,6 +28,8 @@
 - ✅ 长提示词通道（stdin / gemini @file），规避命令行长度与上游 stdin 重复 bug
 - ✅ CI 三平台矩阵（windows/ubuntu/macos）
 - ✅ API 安全面：权限参数黑名单
+- ✅ 桌面体验：双击启动器 + App 模式窗口 + ChatGPT 风格 UI 全面翻新 + 首次使用向导 + 设置持久化 + 任务删除（ADR-009）
+- ⬜ Tauri 2 原生壳（cargo 已确认可用；系统托盘/自动更新/文件对话框）
 - ⬜ SQLite（node:sqlite）存储后端（Store 接口不变）
 - ⬜ Codex/Gemini 真实接入的兼容性矩阵实测（COMPATIBILITY.md 更新）
 - ⬜ worktree setup 钩子（每任务初始化命令：装依赖等）
