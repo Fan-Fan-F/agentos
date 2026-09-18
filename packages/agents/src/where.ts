@@ -16,6 +16,11 @@ function isExecutable(p: string): boolean {
   }
 }
 
+/** 绝对路径快速校验（Windows 不查可执行位；POSIX 同 findInPath 语义） */
+function isExecutableLike(p: string): boolean {
+  return isExecutable(p);
+}
+
 /** 在 PATH 中查找可执行文件（只读 stat，不执行）。 */
 export function findInPath(name: string, pathEnv?: string): string[] {
   const dirs = (pathEnv ?? process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
@@ -116,7 +121,8 @@ async function launcherFromNpmBin(npmPackage: string): Promise<Launcher | null> 
  * - POSIX：直接执行（findInPath 已校验可执行位）。
  */
 export async function resolveLauncher(binaryName: string, npmPackage?: string, pathEnv?: string): Promise<Launcher | null> {
-  const hits = findInPath(binaryName, pathEnv);
+  // 绝对路径直接校验（适配器允许被指定到具体位置，如测试注入的假 agent）
+  const hits = path.isAbsolute(binaryName) ? (isExecutableLike(binaryName) ? [binaryName] : []) : findInPath(binaryName, pathEnv);
   if (!hits.length) return null;
   const hit = hits[0]!;
   const ext = path.extname(hit).toLowerCase();

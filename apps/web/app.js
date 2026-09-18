@@ -384,6 +384,9 @@ async function renderTaskDetail(taskId) {
   });
 
   const busy = (m) => { $('busy').textContent = m || ''; };
+  const showOutcome = (r, prefix) => {
+    busy(`${prefix}：exit=${r.run.exitCode}${r.run.error ? ` ⚠ ${r.run.error}` : ''}${r.capsule ? ' · Capsule 已保存' : ''}`);
+  };
   const guard = (fn) => async () => {
     try { await fn(); } catch (e) { toast(e.message, true); } finally { busy(''); }
   };
@@ -394,19 +397,19 @@ async function renderTaskDetail(taskId) {
   $('btnRun').onclick = guard(async () => {
     busy('运行中…（事件实时推送，可随时关闭窗口回来查看）');
     const r = await post('run', { agentId: agentId() });
-    busy(`完成：exit=${r.run.exitCode} · ${r.diffFiles} 个文件变更${r.capsule ? ' · Capsule 已保存' : ''}`);
+    showOutcome(r, '完成');
     loadTab();
   });
   $('btnSwap').onclick = guard(async () => {
     busy('交接中… Capsule → 上下文编译 → 新 worktree → 七问验证');
     const r = await post('swap', { toAgentId: agentId2() });
-    busy(`接管完成：${r.run.agentId} exit=${r.run.exitCode}${r.capsule ? ' · 新 Capsule 已链接' : ''}`);
+    showOutcome(r, `接管完成（${r.run.agentId}）`);
     loadTab();
   });
   $('btnResume').onclick = guard(async () => {
     busy('恢复中…');
     const r = await post('resume', { agentId: agentId() === 'auto' ? undefined : agentId() });
-    busy(`恢复完成：exit=${r.run.exitCode}`);
+    showOutcome(r, '恢复完成');
     loadTab();
   });
   $('btnFork').onclick = guard(async () => {
@@ -414,7 +417,7 @@ async function renderTaskDetail(taskId) {
     if (!ids.length) throw new Error('没有已安装的 Agent 可分叉');
     busy(`分叉并行中（${ids.join(', ')}，相同起点）…`);
     const r = await post('fork', { agentIds: ids });
-    busy('分叉完成：' + r.map((x) => `${x.agentId}: exit=${x.run.exitCode}, ${x.diffFiles} 文件`).join(' | '));
+    busy('分叉完成：' + r.map((x) => `${x.agentId}: exit=${x.run.exitCode}${x.run.error ? ' ⚠' : ''}`).join(' | '));
     loadTab();
   });
   const submitFollowup = guard(async () => {
@@ -423,7 +426,7 @@ async function renderTaskDetail(taskId) {
     busy('跟进中…（同会话续聊）');
     const r = await post('followup', { message: m });
     $('followupMsg').value = '';
-    busy(`跟进完成：exit=${r.run.exitCode}`);
+    showOutcome(r, '跟进完成');
     loadTab();
   });
   $('btnFollowup').onclick = submitFollowup;

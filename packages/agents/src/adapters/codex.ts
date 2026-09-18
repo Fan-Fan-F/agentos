@@ -90,6 +90,19 @@ export function createCodexAdapter(binary = 'codex'): CliHeadlessAdapter {
         const text = e.data['text'];
         if (typeof text === 'string' && text.trim()) return text;
       }
+      // 无 agent_message 时：优先返回最后一个 error 的人类可读消息，绝不回吐原始 JSONL
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i]!;
+        if (e.type === 'error' && typeof e.data['message'] === 'string') {
+          return `错误：${e.data['message']}`;
+        }
+      }
+      // stdout 是 JSONL 时不要原样返回：给出可读摘要
+      const looksJsonl = stdout.trimStart().startsWith('{') || stdout.trimStart().startsWith('[');
+      if (looksJsonl && events.length > 0) {
+        const kinds = [...new Set(events.map((e) => e.type))].join('/');
+        return `（codex 返回了 ${events.length} 条事件（${kinds}），未包含文本消息。请检查 codex CLI 版本/登录状态，或运行 agentos doctor。）`;
+      }
       return stdout.trim().slice(-4000);
     },
   });

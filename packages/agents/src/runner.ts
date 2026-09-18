@@ -22,6 +22,7 @@ import {
   type RoutableAgent,
 } from '@agentos/core';
 import type { AgentAdapter, AgentRunOptions, AgentRunResult } from './adapter.js';
+import { diagnoseFailure } from './diagnose.js';
 import { profileFor } from './catalog.js';
 import { buildHandoffPrompt, buildVerifyProbe, writeHandoffFile } from './handoff.js';
 import type { WorktreeRef } from '@agentos/core';
@@ -312,6 +313,19 @@ export class TaskRunner {
       durationMs: result.durationMs,
     });
 
+    // 故障诊断：失败必须有"发生了什么 + 该怎么办"，而不是把 402/JSONL 原样丢给用户
+    let diagnosisHint: string | undefined;
+    if (result.exitCode !== 0 || result.timedOut) {
+      const d = diagnoseFailure({ finalMessage: result.finalMessage, stderrTail: result.stderrTail, exitCode: result.exitCode });
+      if (d) {
+        diagnosisHint = `[${d.kind}] ${d.hint}`;
+        await log.append(task.id, adapter.id, 'agent.error', { kind: d.kind, hint: d.hint, matched: d.matched });
+      } else if (result.timedOut) {
+        diagnosisHint = '[timeout] Agent 运行超时被强制终止。可在调用时调大超时，或拆小任务后重试。';
+        await log.append(task.id, adapter.id, 'agent.error', { kind: 'timeout', hint: diagnosisHint });
+      }
+    }
+
     const cp = await this.git.checkpoint(wt.path, `${task.id} ${adapter.id}`);
     if (cp.committed) {
       await log.append(task.id, 'system', 'git.checkpoint', { worktree: wt.path, hash: cp.hash });
@@ -363,7 +377,7 @@ export class TaskRunner {
       finishedAt: nowIso(),
       finalMessage: truncate(result.finalMessage, 2000),
       durationMs: result.durationMs,
-      error: result.timedOut ? 'timed out' : undefined,
+      error: result.timedOut && !diagnosisHint ? 'timed out' : diagnosisHint,
     };
     return { run, capsule, worktreePath: wt.path, branch: wt.branch, diffFiles: diff.files.length, diffStat: diff.stat };
   }
@@ -452,20 +466,28 @@ export class TaskRunner {
       },
     });
 
-    // 七问验证探针：优先原生 resume 同会话，否则新开一次只读问答
+    // 七问验证探针：优先原生 resume 同会话，否则新开一次只读问答。
+    // 目标 agent 本身运行失败时跳过探针（省一次注定失败的调用，避免噪音）。
     let probeAnswer = '';
-    try {
-      const probe = buildVerifyProbe();
-      const probeOpts: AgentRunOptions = { cwd: outcome.worktreePath, timeoutMs: 120_000, signal: opts.signal };
-      const probeResult =
-        outcome.run.sessionId && toAdapter.supportsResume() && toAdapter.resume
-          ? await toAdapter.resume(outcome.run.sessionId, probe, probeOpts)
-          : await toAdapter.run(probe, probeOpts);
-      probeAnswer = probeResult.finalMessage;
-      await log.append(taskId, opts.toAgentId, 'agent.replied', { kind: 'handoff-verify', answer: truncate(probeAnswer, 4000) });
-      this.bus.publish({ from: opts.toAgentId, to: fromAgent, type: 'return-task', taskId, payload: { probeAnswer: truncate(probeAnswer, 2000) } });
-    } catch (err) {
-      await log.append(taskId, opts.toAgentId, 'agent.error', { message: `交接验证探针失败: ${(err as Error).message}` });
+    if (outcome.run.exitCode !== 0 || outcome.run.error) {
+      await log.append(taskId, opts.toAgentId, 'agent.error', {
+        kind: 'probe-skipped',
+        hint: '接管运行已失败，跳过七问验证探针。请先根据上方诊断解决该 Agent 的问题（如充值/升级/登录）。',
+      });
+    } else {
+      try {
+        const probe = buildVerifyProbe();
+        const probeOpts: AgentRunOptions = { cwd: outcome.worktreePath, timeoutMs: 120_000, signal: opts.signal };
+        const probeResult =
+          outcome.run.sessionId && toAdapter.supportsResume() && toAdapter.resume
+            ? await toAdapter.resume(outcome.run.sessionId, probe, probeOpts)
+            : await toAdapter.run(probe, probeOpts);
+        probeAnswer = probeResult.finalMessage;
+        await log.append(taskId, opts.toAgentId, 'agent.replied', { kind: 'handoff-verify', answer: truncate(probeAnswer, 4000) });
+        this.bus.publish({ from: opts.toAgentId, to: fromAgent, type: 'return-task', taskId, payload: { probeAnswer: truncate(probeAnswer, 2000) } });
+      } catch (err) {
+        await log.append(taskId, opts.toAgentId, 'agent.error', { message: `交接验证探针失败: ${(err as Error).message}` });
+      }
     }
 
     const baseCommit = await this.git.revParse(task.repoRoot, sourceBranch);
@@ -533,6 +555,13 @@ export class TaskRunner {
     await log.append(taskId, fromAgent, 'agent.asked', { to: toAdapter.id, question: opts.question });
 
     const result = await toAdapter.run(prompt, { cwd: lastWorktree ?? task.repoRoot, timeoutMs: opts.timeoutMs ?? 180_000, signal: opts.signal });
+    // ask 的失败绝不当作"回答"返回（曾把 402 错误当成评审结论交回给用户）
+    if (result.exitCode !== 0 || result.timedOut) {
+      const d = diagnoseFailure({ finalMessage: result.finalMessage, stderrTail: result.stderrTail, exitCode: result.exitCode });
+      const hint = d ? `[${d.kind}] ${d.hint}` : `Agent ${toAdapter.id} 返回失败（exit=${result.exitCode}），请查看时间线详情。`;
+      await log.append(taskId, toAdapter.id, 'agent.error', { kind: 'ask-failed', hint });
+      throw new Error(hint);
+    }
     this.bus.recordReply(msg.id, truncate(result.finalMessage, 4000));
     await log.append(taskId, toAdapter.id, 'agent.replied', { kind: 'ask', answer: truncate(result.finalMessage, 4000) });
     return { answer: result.finalMessage };
