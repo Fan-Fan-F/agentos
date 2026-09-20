@@ -178,7 +178,7 @@ describe('AgentOS REST API', () => {
     expect(installUnknown.statusCode).toBe(404);
   });
 
-  it('安全面：bypass 类权限参数被 API 层拒绝', async () => {
+  it('安全面：bypass 类权限参数与 full 档被 API 层拒绝（AGENTOS_ALLOW_BYPASS 门禁）', async () => {
     const tasks = await server.app.inject({ method: 'GET', url: '/api/tasks' });
     const taskId = (tasks.json() as Array<{ id: string }>)[0]!.id;
     const res = await server.app.inject({
@@ -188,6 +188,28 @@ describe('AgentOS REST API', () => {
     });
     expect(res.statusCode).toBe(400);
     expect((res.json() as { error: string }).error).toContain('拒绝危险权限参数');
+
+    const fullProfile = await server.app.inject({
+      method: 'POST',
+      url: `/api/tasks/${taskId}/run`,
+      payload: { agentId: 'claude', profile: 'full' },
+    });
+    expect(fullProfile.statusCode).toBe(400);
+    expect((fullProfile.json() as { error: string }).error).toContain("'full'");
+  });
+
+  it('权限档贯通：developer 档映射到 agent 收到的 flags（stub 记录 opts）', async () => {
+    const projects = await server.app.inject({ method: 'GET', url: '/api/projects' });
+    const projectId = (projects.json() as Array<{ id: string }>)[0]!.id;
+    const created = await server.app.inject({ method: 'POST', url: '/api/tasks', payload: { projectId, objective: '权限档验证' } });
+    const tid = (created.json() as { id: string }).id;
+    const res = await server.app.inject({ method: 'POST', url: `/api/tasks/${tid}/run`, payload: { agentId: 'claude', profile: 'developer' } });
+    expect(res.statusCode).toBe(200);
+    const stub = server.runner.adapterFor('claude') as unknown as { calls: Array<{ opts?: { permissionFlags?: string[] } }> };
+    const last = stub.calls.filter((c) => c.opts?.permissionFlags?.length).at(-1);
+    expect(last?.opts?.permissionFlags).toContain('--permission-mode');
+    expect(last?.opts?.permissionFlags).toContain('acceptEdits');
+    await server.app.inject({ method: 'DELETE', url: `/api/tasks/${tid}` });
   });
 
   it('followup：缺 message 400；正常跟进产生链式 Capsule', async () => {

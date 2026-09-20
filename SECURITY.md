@@ -18,7 +18,8 @@
 ## 权限模型（MVP → M3）
 
 - MVP：adapter 默认安全档（不追加任何权限放宽 flag）；任务在**独立 worktree** 中运行，物理隔离即第一道防线；大规模修改前自动 checkpoint（GitEngine）。
-- M3：统一 Permission Policy（Read=allow / Edit workspace=allow / Run tests=allow / Install=ask / Network=ask / Delete=ask / Outside workspace=deny；Safe / Developer / Full / Custom 档位）→ Adapter 映射到各家原生权限系统（Claude `--permission-mode/--allowedTools`、Codex `--sandbox/--approval-policy`、Gemini `--approval-mode`、ACP `session/request_permission`）。
+- 已落地（ADR-010）：三档 Permission Profile（safe / developer / full）→ 各家原生 flag 映射，映射表见 COMPATIBILITY.md；`full` 档与 bypass 类 flag 同受 `AGENTOS_ALLOW_BYPASS=1` 门禁，UI 默认禁用。
+- M3+：per-task 细粒度 allowlist（如仅允许 `Bash(node --test:*)`）、ACP `session/request_permission` 的策略化应答（当前默认拒绝）。
 
 ## 已知风险与缓解
 

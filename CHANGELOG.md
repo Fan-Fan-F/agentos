@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0（2026-09-20）— 统一权限档位（ADR-010）
+
+- **Permission Profile**：safe / developer / full 三档 → 各家原生 flag 映射（映射表见 COMPATIBILITY.md），
+  Runner/API/UI 全链贯通；`full` 档与 bypass flag 同受 `AGENTOS_ALLOW_BYPASS=1` 门禁（默认 400，UI 禁用）。
+- 设置面板新增"默认权限档"；任务详情页一键切换档位；real-e2e 改用 developer 档（真实验证映射 flag）。
+- 测试 77 项（新增映射表/优先级/未知 agent 不猜 flag/server 门禁/stub 收到映射 flags 断言）。
+
 ## 0.3.0（2026-09-18）— 桌面体验全面翻新（全流程审计）
 
 ### 桌面端

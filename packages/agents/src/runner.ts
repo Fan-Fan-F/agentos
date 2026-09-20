@@ -23,6 +23,7 @@ import {
 } from '@agentos/core';
 import type { AgentAdapter, AgentRunOptions, AgentRunResult } from './adapter.js';
 import { diagnoseFailure } from './diagnose.js';
+import { resolveRunPermissions } from './permissions.js';
 import { profileFor } from './catalog.js';
 import { buildHandoffPrompt, buildVerifyProbe, writeHandoffFile } from './handoff.js';
 import type { WorktreeRef } from '@agentos/core';
@@ -110,6 +111,8 @@ export interface RunOnceOptions {
   mode?: SessionRun['mode'];
   baseRef?: string;
   prompt?: string;
+  /** 统一权限档位（ADR-010）；与 permissionFlags 二选一，显式 flags 优先 */
+  profile?: 'safe' | 'developer' | 'full';
   permissionFlags?: string[];
   allowedTools?: string[];
   timeoutMs?: number;
@@ -277,7 +280,8 @@ export class TaskRunner {
     const startedAt = nowIso();
     const runOpts: AgentRunOptions = {
       cwd: wt.path,
-      permissionFlags: opts.permissionFlags,
+      // 权限解析：显式 flags > 档位映射（ADR-010）> safe（不追加）
+      permissionFlags: resolveRunPermissions(adapter.id, { profile: opts.profile, permissionFlags: opts.permissionFlags }),
       allowedTools: opts.allowedTools,
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
       signal: opts.signal,
@@ -384,7 +388,7 @@ export class TaskRunner {
 
   async runTask(
     taskId: string,
-    opts: { agentId?: string; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number; signal?: AbortSignal } = {},
+    opts: { agentId?: string; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<RunOutcome> {
     if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
     this.runningTasks.add(taskId);
@@ -399,6 +403,7 @@ export class TaskRunner {
       const outcome = await this.runOnce(task, {
         agentId: opts.agentId ?? 'auto',
         mode: 'run',
+        profile: opts.profile,
         permissionFlags: opts.permissionFlags,
         allowedTools: opts.allowedTools,
         timeoutMs: opts.timeoutMs,
@@ -421,7 +426,7 @@ export class TaskRunner {
   /** Agent Hot Swap：任意 → 任意（ADR-005）。新 worktree 基于源分支，改动随分支带走。 */
   async swapAgent(
     taskId: string,
-    opts: { toAgentId: string; level?: ContextLevel; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+    opts: { toAgentId: string; level?: ContextLevel; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RunOutcome> {
     if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
     this.runningTasks.add(taskId);
@@ -434,7 +439,7 @@ export class TaskRunner {
 
   private async swapAgentInner(
     taskId: string,
-    opts: { toAgentId: string; level?: ContextLevel; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+    opts: { toAgentId: string; level?: ContextLevel; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RunOutcome> {
     let task = await this.getTask(taskId);
     const sourceCapsule = this.latestCapsule(task);
@@ -573,7 +578,7 @@ export class TaskRunner {
    */
   async followUp(
     taskId: string,
-    opts: { message: string; agentId?: string; timeoutMs?: number; signal?: AbortSignal },
+    opts: { message: string; agentId?: string; profile?: 'safe' | 'developer' | 'full'; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RunOutcome> {
     if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
     this.runningTasks.add(taskId);
@@ -586,7 +591,7 @@ export class TaskRunner {
 
   private async followUpInner(
     taskId: string,
-    opts: { message: string; agentId?: string; timeoutMs?: number; signal?: AbortSignal },
+    opts: { message: string; agentId?: string; profile?: 'safe' | 'developer' | 'full'; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<RunOutcome> {
     const task = await this.getTask(taskId);
     const lastRun = [...task.runs].reverse().find((r) => r.agentId);
@@ -601,6 +606,7 @@ export class TaskRunner {
     const lastSession = [...task.runs].reverse().find((r) => r.sessionId);
     const runOpts: AgentRunOptions = {
       cwd,
+      permissionFlags: resolveRunPermissions(agentId, { profile: opts.profile }),
       timeoutMs: opts.timeoutMs ?? this.defaultTimeoutMs,
       signal: opts.signal,
       onEvent: (evt) => {
@@ -692,7 +698,7 @@ export class TaskRunner {
   /** Session Fork：相同起点（同一 base commit + 相同目标），各自独立 worktree 并行。 */
   async forkAll(
     taskId: string,
-    opts: { agentIds: string[]; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+    opts: { agentIds: string[]; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Array<RunOutcome & { agentId: string }>> {
     if (this.runningTasks.has(taskId)) throw new Error('任务已在运行中');
     this.runningTasks.add(taskId);
@@ -705,7 +711,7 @@ export class TaskRunner {
 
   private async forkAllInner(
     taskId: string,
-    opts: { agentIds: string[]; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
+    opts: { agentIds: string[]; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<Array<RunOutcome & { agentId: string }>> {
     let task = await this.getTask(taskId);
     if (task.status === 'running') throw new Error('任务已在运行中');
@@ -721,6 +727,7 @@ export class TaskRunner {
           agentId,
           mode: 'fork',
           baseRef: task.baseRef,
+          profile: opts.profile,
           permissionFlags: opts.permissionFlags,
           timeoutMs: opts.timeoutMs,
           signal: opts.signal,

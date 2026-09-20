@@ -57,9 +57,21 @@ function resolveWebRoot(explicit?: string): string | undefined {
 
 /**
  * 权限参数黑名单（SECURITY.md）：API 层拒绝 bypass 类 flag。
+ * 'full' 权限档等价于 bypass —— 同样受 AGENTOS_ALLOW_BYPASS 门禁。
  * 确有需要时由用户显式设置 AGENTOS_ALLOW_BYPASS=1 启动服务并自担风险。
  */
-const DANGEROUS_FLAG_RE = /dangerously|bypass|yolo/i;
+const DANGEROUS_FLAG_RE = /dangerously|bypass|yolo|full-access/i;
+
+function guardProfileSelection(body: { profile?: string; permissionFlags?: string[] }): void {
+  if (process.env.AGENTOS_ALLOW_BYPASS === '1') return;
+  if (body.profile === 'full') {
+    throw new Error("权限档 'full' 等价于解除沙箱，已被平台策略拒绝；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险。");
+  }
+  const bad = (body.permissionFlags ?? []).filter((f) => DANGEROUS_FLAG_RE.test(f));
+  if (bad.length) {
+    throw new Error(`拒绝危险权限参数: ${bad.join(', ')}（平台策略禁止绕过 agent 权限；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险）`);
+  }
+}
 
 function sanitizePermissionFlags(flags?: string[]): string[] | undefined {
   if (!flags?.length) return undefined;
@@ -281,8 +293,9 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/run', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { agentId?: string; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number };
+    const body = (req.body ?? {}) as { agentId?: string; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number };
     try {
+      guardProfileSelection(body);
       return await runner.runTask(id, { ...body, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
@@ -291,10 +304,11 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/swap', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { toAgentId?: string; level?: 'minimal' | 'standard' | 'full'; permissionFlags?: string[] };
+    const body = (req.body ?? {}) as { toAgentId?: string; level?: 'minimal' | 'standard' | 'full'; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[] };
     if (!body.toAgentId) return reply.code(400).send({ error: '缺少 toAgentId' });
     try {
-      return await runner.swapAgent(id, { toAgentId: body.toAgentId, level: body.level, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+      guardProfileSelection(body);
+      return await runner.swapAgent(id, { toAgentId: body.toAgentId, level: body.level === 'full' ? undefined : body.level, profile: body.profile, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -302,10 +316,11 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/followup', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { message?: string; agentId?: string };
+    const body = (req.body ?? {}) as { message?: string; agentId?: string; profile?: 'safe' | 'developer' | 'full' };
     if (!body.message?.trim()) return reply.code(400).send({ error: '缺少 message' });
     try {
-      return await runner.followUp(id, { message: body.message.trim(), agentId: body.agentId });
+      guardProfileSelection(body);
+      return await runner.followUp(id, { message: body.message.trim(), agentId: body.agentId, profile: body.profile });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -334,10 +349,11 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.post('/api/tasks/:id/fork', async (req, reply) => {
     const { id } = req.params as { id: string };
-    const body = (req.body ?? {}) as { agentIds?: string[]; permissionFlags?: string[] };
+    const body = (req.body ?? {}) as { agentIds?: string[]; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[] };
     if (!body.agentIds?.length) return reply.code(400).send({ error: '缺少 agentIds' });
     try {
-      return await runner.forkAll(id, { agentIds: body.agentIds, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+      guardProfileSelection(body);
+      return await runner.forkAll(id, { agentIds: body.agentIds, profile: body.profile, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }

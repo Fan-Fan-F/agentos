@@ -33,7 +33,7 @@
 - ⬜ SQLite（node:sqlite）存储后端（Store 接口不变）
 - ⬜ Codex/Gemini 真实接入的兼容性矩阵实测（COMPATIBILITY.md 更新）
 - ⬜ worktree setup 钩子（每任务初始化命令：装依赖等）
-- ⬜ Permission Profile → 各家 flag 映射（已有黑名单基线）
+- ✅ Permission Profile 三档 → 各家 flag 映射（ADR-010；safe/developer/full + BYPASS 门禁）
 
 ## M3 — 协议层
 - ⬜ AcpAdapter（@zed-industries/agent-client-protocol；OpenCode/Gemini 优先）

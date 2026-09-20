@@ -13,6 +13,7 @@
 | [ADR-007](./docs/decisions/ADR-007-worktree-placement.md) | worktree | 仓库外兄弟目录 `.agentos-worktrees/`，独立分支命名 |
 | [ADR-008](./docs/decisions/ADR-008-static-web-ui.md) | UI | 零构建静态 SPA 先行，React 迁移后置 |
 | [ADR-009](./docs/decisions/ADR-009-app-mode-desktop.md) | 桌面端 | App 模式窗口先行（双击启动器），Tauri 原生壳 M5 |
+| [ADR-010](./docs/decisions/ADR-010-permission-profiles.md) | 权限 | 三档 Permission Profile → 各家 flag 映射；full 档受 BYPASS 门禁 |
 
 ## 关键开放问题（后续 ADR 候选）
 

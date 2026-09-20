@@ -89,8 +89,7 @@ async function main() {
   const dataDir = path.join(tmp, 'agentos-home');
   const runner = new TaskRunner({ dataDir, adapters: createDefaultAdapters(), defaultTimeoutMs: 8 * 60_000 });
 
-  const devFlagsClaude = ['--permission-mode', 'acceptEdits', '--allowedTools', 'Read,Edit,Write,Glob,Grep,Bash'];
-  const devFlagsCodex = ['--sandbox', 'workspace-write'];
+  const devProfile = 'developer'; // ADR-010 权限档映射（同时真实验证映射 flag）
 
   // 3. claude 真实工作
   say(`▶ [1/5] ${fromAgent} 开始真实实现…`);
@@ -99,7 +98,7 @@ async function main() {
     objective,
     constraints: ['不引入任何 npm 依赖', 'package.json 保持不变'],
   });
-  const r1 = await runner.runTask(task.id, { agentId: fromAgent, permissionFlags: devFlagsClaude });
+  const r1 = await runner.runTask(task.id, { agentId: fromAgent, profile: devProfile });
   say(`${fromAgent} 完成: exit=${r1.run.exitCode} 分支=${r1.branch} 耗时=${Math.round(r1.run.durationMs / 1000)}s 变更文件=${r1.diffFiles}`);
   say(`${fromAgent} 错误诊断: ${r1.run.error ?? '（无）'}`);
   const claudeQuotaBlocked = r1.run.exitCode !== 0 && /\[(quota|version|auth|rate|network|model)\]/.test(r1.run.error ?? '');
@@ -113,7 +112,7 @@ async function main() {
 
   // 4. 接管（Capsule → 七问验证；接管失败时验证诊断与探针跳过）
   say(`▶ [2/5] 交接给 ${toAgent}（七问验证）…`);
-  const r2 = await runner.swapAgent(task.id, { toAgentId: toAgent, permissionFlags: devFlagsCodex });
+  const r2 = await runner.swapAgent(task.id, { toAgentId: toAgent, profile: devProfile });
   say(`${toAgent} 接管: exit=${r2.run.exitCode} 分支=${r2.branch} capsule=${r2.capsule?.id}`);
   say(`${toAgent} 错误诊断: ${r2.run.error ?? '（无）'}`);
   assert(r2.capsule?.origin.resumedFromCapsuleId === r1.capsule?.id, 'Capsule 链正确');
@@ -154,7 +153,7 @@ async function main() {
   say('▶ [4/5] codex 跟进…');
   const r3 = await runner.followUp(task.id, {
     agentId: 'codex',
-    permissionFlags: devFlagsCodex,
+    profile: devProfile,
     message: '运行 node --test 确认测试全部通过；若测试文件缺失则补上；然后输出一段总结：当前任务状态、已完成、下一步。',
   });
   say(`codex 跟进: exit=${r3.run.exitCode} 诊断: ${r3.run.error ?? '（无）'}`);

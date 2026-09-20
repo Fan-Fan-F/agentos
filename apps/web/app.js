@@ -161,6 +161,12 @@ $('btnSettings').onclick = async () => {
   sel.innerHTML = '<option value="">Auto（自动路由）</option>' +
     state.agents.filter((a) => a.status === 'installed').map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
   sel.value = state.settings.defaultAgent || '';
+  const profSel = document.getElementById('setDefaultProfile');
+  profSel.value = state.settings.defaultProfile === 'developer' ? 'developer' : 'safe';
+  profSel.onchange = async (e) => {
+    state.settings = await api('/api/settings', { method: 'PUT', body: { ...state.settings, defaultProfile: e.target.value } });
+    toast('已保存');
+  };
   $('metaCard').innerHTML = state.meta
     ? `版本 <b>v${esc(state.meta.version)}</b> · ${esc(state.meta.platform)} · ${esc(state.meta.node)}<br>数据目录：${esc(state.meta.dataDir)}<br>本地优先 · 数据永不上传`
     : '';
@@ -359,11 +365,21 @@ async function renderTaskDetail(taskId) {
           <select id="opAgent" class="input" style="width:200px">${opts(state.settings.defaultAgent || 'auto')}</select>
           <select id="opAgent2" class="input" style="width:200px">${agents2}</select>
         </div>
-        <div class="row" style="margin-top:12px">
-          <button class="btn btn-primary" id="btnRun">▶ 运行</button>
-          <button class="btn" id="btnSwap" title="Capsule → 上下文 → 新 Agent 接管（七问验证）">🔁 换人接管</button>
-          <button class="btn" id="btnResume" title="同 Agent 用 Capsule 续接">↩️ 恢复</button>
-          <button class="btn" id="btnFork" title="相同起点，多 Agent 并行">⑂ 分叉</button>
+        <div class="row" style="margin-top:14px;justify-content:space-between">
+          <div class="row">
+            <button class="btn btn-primary" id="btnRun">▶ 运行</button>
+            <button class="btn" id="btnSwap" title="Capsule → 上下文 → 新 Agent 接管（七问验证）">🔁 换人接管</button>
+            <button class="btn" id="btnResume" title="同 Agent 用 Capsule 续接">↩️ 恢复</button>
+            <button class="btn" id="btnFork" title="相同起点，多 Agent 并行">⑂ 分叉</button>
+          </div>
+          <div class="row" title="安全=各家默认；开发者=允许在独立 worktree 内读写与执行；完全=解除沙箱（默认禁用）">
+            <span class="muted" style="font-size:12px">权限档</span>
+            <div class="segmented" id="profileSeg">
+              <button data-profile="safe">安全</button>
+              <button data-profile="developer">开发者</button>
+              <button data-profile="full" disabled title="默认禁用；需 AGENTOS_ALLOW_BYPASS=1 启动服务">完全</button>
+            </div>
+          </div>
         </div>
         <label class="field-label">跟进 · 向最近运行的 Agent 发新指令（同会话续聊）</label>
         <div class="row"><input id="followupMsg" class="input" style="flex:1" placeholder="例如：把错误信息改成英文，并重跑测试" /><button class="btn" id="btnFollowup">跟进</button></div>
@@ -384,6 +400,15 @@ async function renderTaskDetail(taskId) {
   });
 
   const busy = (m) => { $('busy').textContent = m || ''; };
+  let currentProfile = state.settings.defaultProfile === 'developer' ? 'developer' : 'safe';
+  document.querySelectorAll('#profileSeg button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.profile === currentProfile);
+    b.onclick = () => {
+      if (b.disabled) return;
+      currentProfile = b.dataset.profile;
+      document.querySelectorAll('#profileSeg button').forEach((x) => x.classList.toggle('on', x.dataset.profile === currentProfile));
+    };
+  });
   const showOutcome = (r, prefix) => {
     busy(`${prefix}：exit=${r.run.exitCode}${r.run.error ? ` ⚠ ${r.run.error}` : ''}${r.capsule ? ' · Capsule 已保存' : ''}`);
   };
@@ -396,13 +421,13 @@ async function renderTaskDetail(taskId) {
 
   $('btnRun').onclick = guard(async () => {
     busy('运行中…（事件实时推送，可随时关闭窗口回来查看）');
-    const r = await post('run', { agentId: agentId() });
+    const r = await post('run', { agentId: agentId(), profile: currentProfile });
     showOutcome(r, '完成');
     loadTab();
   });
   $('btnSwap').onclick = guard(async () => {
     busy('交接中… Capsule → 上下文编译 → 新 worktree → 七问验证');
-    const r = await post('swap', { toAgentId: agentId2() });
+    const r = await post('swap', { toAgentId: agentId2(), profile: currentProfile });
     showOutcome(r, `接管完成（${r.run.agentId}）`);
     loadTab();
   });
@@ -416,7 +441,7 @@ async function renderTaskDetail(taskId) {
     const ids = agents.map((a) => a.id).slice(0, 3);
     if (!ids.length) throw new Error('没有已安装的 Agent 可分叉');
     busy(`分叉并行中（${ids.join(', ')}，相同起点）…`);
-    const r = await post('fork', { agentIds: ids });
+    const r = await post('fork', { agentIds: ids, profile: currentProfile });
     busy('分叉完成：' + r.map((x) => `${x.agentId}: exit=${x.run.exitCode}${x.run.error ? ' ⚠' : ''}`).join(' | '));
     loadTab();
   });
@@ -424,7 +449,7 @@ async function renderTaskDetail(taskId) {
     const m = $('followupMsg').value.trim();
     if (!m) throw new Error('请输入跟进指令');
     busy('跟进中…（同会话续聊）');
-    const r = await post('followup', { message: m });
+    const r = await post('followup', { message: m, profile: currentProfile });
     $('followupMsg').value = '';
     showOutcome(r, '跟进完成');
     loadTab();

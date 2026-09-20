@@ -60,6 +60,9 @@ export interface ChangedFile {
 
 export type TaskStatus = 'created' | 'running' | 'waiting' | 'interrupted' | 'done' | 'failed';
 
+/** 统一权限档位（ADR-010）：映射到各家原生权限系统的规则见 @agentos/agents/permissions */
+export type PermissionProfile = 'safe' | 'developer' | 'full';
+
 export type RunMode = 'run' | 'swap' | 'fork' | 'ask' | 'resume';
 
 export interface DecisionRecord {

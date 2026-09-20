@@ -38,6 +38,16 @@
 | gemini/codex/claude 会话文件为私有 schema 且漂移 | 导入/恢复 | 只读 + 逐行容错解析（坏行跳过、缺字段容忍），绝不写 |
 | codex 不支持自定义 session id | 会话管理 | 接受其原生 id；Capsule 链承担跨运行追踪 |
 
+## 权限档位映射（ADR-010，已在 API/Runner/UI 贯通）
+
+| 档位 | Claude Code | Codex CLI | Gemini CLI | OpenCode |
+|---|---|---|---|---|
+| safe（默认） | 各家默认 | 各家默认 | 各家默认 | 各家默认 |
+| developer | `--permission-mode acceptEdits --allowedTools …` | `--sandbox workspace-write` | `--approval-mode auto_edit` | （默认即工作区执行） |
+| full（门禁） | `--permission-mode bypassPermissions` | `--sandbox danger-full-access` | `--approval-mode yolo` | （无对应 flag） |
+
+full 档与 bypass 类 flag 同受 `AGENTOS_ALLOW_BYPASS=1` 门禁（默认 400）；未收录 agent 绝不猜测 flag。
+
 ## 协议兼容（M3 目标）
 
 | 协议 | AgentOS 立场 |
