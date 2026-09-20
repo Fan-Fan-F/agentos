@@ -47,13 +47,16 @@ async function main() {
 
   // 0. 环境前置：二进制存在 + 登录标记（stat，不读内容）+ 版本探测（夜间 dogfooding 授权）
   const home = os.homedir();
-  const claudeVer = await probeVersion('C:/Users/Fan/AppData/Roaming/npm/claude.cmd').catch(() => undefined);
-  const codexVer = await probeVersion('C:/Users/Fan/AppData/Roaming/npm/codex.cmd').catch(() => undefined);
+  const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming') : '');
+  const claudeCmd = process.platform === 'win32' ? path.join(appData, 'npm', 'claude.cmd') : 'claude';
+  const codexCmd = process.platform === 'win32' ? path.join(appData, 'npm', 'codex.cmd') : 'codex';
+  const claudeVer = await probeVersion(claudeCmd).catch(() => undefined);
+  const codexVer = await probeVersion(codexCmd).catch(() => undefined);
   const pre = {
-    claudeBin: fs.existsSync('C:/Users/Fan/AppData/Roaming/npm/claude.cmd'),
+    claudeBin: fs.existsSync(claudeCmd),
     claudeAuth: fs.existsSync(path.join(home, '.claude.json')),
     claudeVer,
-    codexBin: fs.existsSync('C:/Users/Fan/AppData/Roaming/npm/codex.cmd'),
+    codexBin: fs.existsSync(codexCmd),
     codexAuth: fs.existsSync(path.join(home, '.codex', 'auth.json')),
     codexVer,
   };

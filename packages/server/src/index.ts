@@ -101,10 +101,10 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
   const recovered = await runner.recoverAll();
   if (recovered.length) app.log.warn({ recovered }, 'recovered interrupted tasks');
 
-  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.3.0' }));
+  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.4.0' }));
 
   app.get('/api/meta', async () => ({
-    version: '0.3.0',
+    version: '0.4.0',
     node: process.version,
     platform: process.platform,
     dataDir,

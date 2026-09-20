@@ -1,6 +1,6 @@
 {
   "name": "agentos",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "AgentOS — Build once, use every agent. A local-first platform to run, switch, fork and orchestrate multiple AI coding agents with portable sessions.",
   "license": "MIT",

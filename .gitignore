@@ -6,3 +6,7 @@ data/
 *.log
 .DS_Store
 Thumbs.db
+.agentos-worktrees/
+.env
+.env.*
+*.local
