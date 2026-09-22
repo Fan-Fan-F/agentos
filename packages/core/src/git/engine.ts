@@ -102,11 +102,12 @@ export class GitEngine {
   /** Refuse moved/replaced workspaces before staging files or launching an Agent. */
   async assertWorktree(repoRoot: string, wtPath: string, branch: string): Promise<void> {
     if (!fs.existsSync(wtPath)) throw new GitError('任务 worktree 不存在，已停止操作: ' + wtPath);
-    const realDestination = fs.realpathSync(wtPath);
+    // Native Windows canonicalization expands 8.3 aliases and restores stored casing.
+    const realDestination = fs.realpathSync.native(wtPath);
     const registered = (await this.listWorktrees(repoRoot)).find(entry =>
-      fs.existsSync(entry.path) && fs.realpathSync(entry.path) === realDestination,
+      fs.existsSync(entry.path) && fs.realpathSync.native(entry.path) === realDestination,
     );
-    if (realDestination === fs.realpathSync(repoRoot) || !registered || registered.branch !== branch ||
+    if (realDestination === fs.realpathSync.native(repoRoot) || !registered || registered.branch !== branch ||
         await this.currentBranch(wtPath) !== branch) {
       throw new GitError('已有目录不是预期的 worktree，已保留所有文件: ' + wtPath);
     }

@@ -137,6 +137,17 @@ describe('GitEngine（Git Workspace Engine）', () => {
     await expect(engine.createWorktree(repoRoot, { taskId: 'collision', agentId: 'codex' })).rejects.toThrow(/worktree/);
     expect(readFileSync(path.join(destination, 'keep.txt'), 'utf8')).toBe('user data');
   });
+
+  it.skipIf(process.platform !== 'win32')('recognizes Windows path aliases without accepting the main checkout', async () => {
+    const wt = await engine.createWorktree(repoRoot, { taskId: 'path-alias', agentId: 'codex' });
+    writeFileSync(path.join(wt.path, 'draft.txt'), 'keep uncommitted output\n');
+    // Windows resolves these spellings to the same directory; string equality does not.
+    await expect(engine.assertWorktree(repoRoot, wt.path.toUpperCase(), wt.branch)).resolves.toBeUndefined();
+    await expect(engine.assertWorktree(repoRoot, repoRoot.toUpperCase(), await engine.currentBranch(repoRoot)))
+      .rejects.toThrow(/worktree/);
+    expect(readFileSync(path.join(wt.path, 'draft.txt'), 'utf8')).toBe('keep uncommitted output\n');
+    expect(readFileSync(path.join(repoRoot, 'README.md'), 'utf8')).toBe('# demo\n');
+  });
   it('sanitizeRefPart 输出安全引用名', () => {
     expect(sanitizeRefPart('任务 测试/01')).toMatch(/^[a-z0-9._-]+$/);
   });
