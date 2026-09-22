@@ -47,6 +47,9 @@ export function buildSections(c: Capsule): ContextSection[] {
   if (c.task.userInstructions.length) {
     sections.push({ name: 'user-instructions', priority: 2, text: `## 用户指令（必须遵守）\n${bullet(c.task.userInstructions)}` });
   }
+  if (c.permissions.expectations.length) {
+    sections.push({ name: 'permissions', priority: 2, text: `## 权限约定\n${bullet(c.permissions.expectations)}` });
+  }
   sections.push({ name: 'status', priority: 2, text: `## 当前状态\n${c.status}` });
   if (c.progress.completed.length) {
     sections.push({ name: 'completed', priority: 3, text: `## 已完成（不要重做）\n${bullet(c.progress.completed)}` });
@@ -77,11 +80,10 @@ export function buildSections(c: Capsule): ContextSection[] {
   if (c.workspace.branch) wsLines.push(`- 分支: ${c.workspace.branch}（变更都在此分支上）`);
   if (c.workspace.baseCommit) wsLines.push(`- 基线: ${c.workspace.baseCommit}`);
   if (c.workspace.worktreePath) wsLines.push(`- worktree: ${c.workspace.worktreePath}`);
-  if (c.workspace.changedFiles.length) {
-    wsLines.push('- 变更文件:');
-    wsLines.push(...c.workspace.changedFiles.map((f) => `  - [${f.change}] ${f.path}`));
-  }
   sections.push({ name: 'workspace', priority: 6, text: `## 工作区\n${wsLines.join('\n')}` });
+  if (c.workspace.changedFiles.length) {
+    sections.push({ name: 'changed-files', priority: 7, text: `## 变更文件\n${bullet(c.workspace.changedFiles.map(f => `[${f.change}] ${f.previousPath ? f.previousPath + ' → ' : ''}${f.path}`))}` });
+  }
   if (c.workspace.diffStat) {
     sections.push({ name: 'diff-stat', priority: 10, text: `## Diff 统计\n\`\`\`\n${truncate(c.workspace.diffStat.trim(), 3000)}\n\`\`\`` });
   }
@@ -94,6 +96,9 @@ export function buildSections(c: Capsule): ContextSection[] {
       priority: 8,
       text: `## 验证状态\n${bullet(c.verification.tests.map((t) => `\`${t.command}\` — 通过 ${t.passed} / 失败 ${t.failed}${t.summary ? `（${t.summary}）` : ''}`))}`,
     });
+  }
+  if (!c.verification.tests.length) {
+    sections.push({ name: 'verification', priority: 8, text: '## 验证状态\n未记录测试结果，不能据此认定测试通过。Agent 的完成回复不等于独立验证。' });
   }
   if (c.context.keyFacts.length) {
     sections.push({ name: 'key-facts', priority: 9, text: `## 关键事实\n${bullet(c.context.keyFacts)}` });
@@ -109,36 +114,37 @@ export function buildSections(c: Capsule): ContextSection[] {
 }
 
 export function compileContext(capsule: Capsule, level: ContextLevel = 'standard'): CompiledContext {
+  if (!Object.hasOwn(CONTEXT_BUDGETS, level)) throw new Error(`未知上下文级别: ${level}`);
   const budget = CONTEXT_BUDGETS[level];
   const sections = buildSections(capsule).sort((a, b) => a.priority - b.priority);
-  const included: string[] = [];
-  const dropped: string[] = [];
-  const bodyParts: string[] = [];
-  let used = 0;
-
+  const required = new Set(['task-objective', 'constraints', 'user-instructions', 'permissions', 'status', 'workspace', 'verification']);
+  const included = new Set(sections.filter(section => required.has(section.name)).map(section => section.name));
   const header =
     `<!-- Context compiled by AgentOS · capsule=${capsule.id} · level=${level} · generated=${new Date().toISOString()} -->\n\n` +
     `你正在接管另一个 AI agent（${capsule.origin.agentId}）未完成的工作。以下是经编译的任务上下文。\n`;
-  used += header.length;
 
-  for (const s of sections) {
-    if (used + s.text.length + 2 > budget && included.length > 0) {
-      dropped.push(s.name);
-      continue;
-    }
-    included.push(s.name);
-    bodyParts.push(s.text);
-    used += s.text.length + 2;
+  const render = () => {
+    const dropped = sections.filter(section => !included.has(section.name)).map(section => section.name);
+    const notice = dropped.length ? `\n\n## 上下文省略\n以下段落因预算省略：${dropped.join(', ')}。省略不表示这些信息不存在；需要时读取原始 Capsule。` : '';
+    return header + sections.filter(section => included.has(section.name)).map(section => section.text).join('\n\n') + notice;
+  };
+  // Never silently drop user constraints or failed verification to make history fit.
+  if (render().length > budget) {
+    throw new Error(`核心交接上下文超过 ${level} 的 ${budget} 字符预算；请缩短核心内容或使用更大的上下文级别。未生成缺失约束的交接包。`);
   }
-
-  const markdown = `${header}${bodyParts.join('\n\n')}`;
+  for (const section of sections) {
+    if (included.has(section.name)) continue;
+    included.add(section.name);
+    if (render().length > budget) included.delete(section.name);
+  }
+  const markdown = render();
   return {
     markdown,
     capsuleId: capsule.id,
     level,
     budgetChars: budget,
     usedChars: markdown.length,
-    includedSections: included,
-    droppedSections: dropped,
+    includedSections: sections.filter(section => included.has(section.name)).map(section => section.name),
+    droppedSections: sections.filter(section => !included.has(section.name)).map(section => section.name),
   };
 }

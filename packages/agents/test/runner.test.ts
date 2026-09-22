@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
@@ -56,6 +56,47 @@ function defaultAdapters() {
 }
 
 describe('TaskRunner 引擎闭环', () => {
+  it('handoff checkpoints dirty recovery output and refreshes current user constraints', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'recover before switching' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    writeFileSync(path.join(first.worktreePath!, 'README.md'), 'unsaved tracked output\n');
+    writeFileSync(path.join(first.worktreePath!, 'recovered.txt'), 'unsaved new output\n');
+    await simpleGit(first.worktreePath!).add('README.md');
+    const interrupted = await runner.getTask(task.id);
+    interrupted.status = 'running';
+    interrupted.constraints = ['never modify the main checkout'];
+    interrupted.userInstructions = ['retain recovered.txt'];
+    await runner.taskStore().saveTask(interrupted);
+    await runner.recoverAll();
+    const next = await runner.swapAgent(task.id, { toAgentId: 'codex' });
+    expect(readFileSync(path.join(next.worktreePath!, 'README.md'), 'utf8').replace(/\r\n/g, '\n')).toBe('unsaved tracked output\n');
+    expect(readFileSync(path.join(next.worktreePath!, 'recovered.txt'), 'utf8').replace(/\r\n/g, '\n')).toBe('unsaved new output\n');
+    const call = (runner.adapterFor('codex') as StubAdapter).calls[0]!;
+    expect(call.prompt).toContain('recovered.txt');
+    expect(call.prompt).toContain('retain recovered.txt');
+    expect(call.prompt).toContain('never modify the main checkout');
+    expect(readFileSync(path.join(repoRoot, 'README.md'), 'utf8')).toBe('# demo\n');
+    expect((await simpleGit(first.worktreePath!).status()).isClean()).toBe(true);
+    expect(next.capsule!.workspace.changedFiles.map(file => file.path)).toContain('recovered.txt');
+  });
+
+  it('refuses a mismatched recovery branch before checkpointing any files', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'protect changed ownership' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    await simpleGit(first.worktreePath!).checkoutLocalBranch('unrelated-user-work');
+    writeFileSync(path.join(first.worktreePath!, 'preserve.txt'), 'do not commit');
+    const head = await simpleGit(first.worktreePath!).revparse(['HEAD']);
+    await expect(runner.swapAgent(task.id, { toAgentId: 'codex' })).rejects.toThrow(/worktree/);
+    expect(await simpleGit(first.worktreePath!).revparse(['HEAD'])).toBe(head);
+    expect((await simpleGit(first.worktreePath!).status()).not_added).toContain('preserve.txt');
+    expect((runner.adapterFor('codex') as StubAdapter).calls).toHaveLength(0);
+    await expect(runner.followUp(task.id, { message: 'continue' })).rejects.toThrow(/worktree/);
+    expect(await simpleGit(first.worktreePath!).revparse(['HEAD'])).toBe(head);
+  });
+
+
   it('非 git 目录拒绝创建任务', async () => {
     const runner = makeRunner();
     await expect(runner.createTask({ repoRoot: dataDir, objective: 'x' })).rejects.toThrow(/不是 git 仓库/);
@@ -134,6 +175,37 @@ describe('TaskRunner 引擎闭环', () => {
     expect(claude.calls.every((c) => !c.prompt.includes('接管'))).toBe(true);
   });
 
+  it.each(['no-run', 'missing-latest', 'main-checkout', 'wrong-branch', 'missing-branch'])('ask refuses unsafe workspace: %s', async (scenario) => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'protect the main checkout during review' });
+    if (scenario !== 'no-run') {
+      const first = await runner.runTask(task.id, { agentId: 'claude' });
+      const stored = await runner.getTask(task.id);
+      if (scenario === 'missing-latest') {
+        // An older valid worktree must not hide a missing current worktree.
+        stored.runs.push({ ...stored.runs[0]!, worktreePath: path.join(dataDir, 'missing-worktree') });
+      } else if (scenario === 'main-checkout') {
+        stored.runs[0]!.worktreePath = repoRoot;
+      } else if (scenario === 'wrong-branch') {
+        await simpleGit(first.worktreePath!).checkoutLocalBranch('user-owned-branch');
+        writeFileSync(path.join(first.worktreePath!, 'keep.txt'), 'preserve user output');
+      } else {
+        stored.runs[0]!.branch = undefined;
+      }
+      await runner.taskStore().saveTask(stored);
+    }
+    const before = await runner.getTask(task.id);
+    await expect(runner.askAgent(task.id, { toAgentId: 'gemini', question: 'review' })).rejects.toThrow(/worktree/);
+    expect((runner.adapterFor('gemini') as StubAdapter).calls).toHaveLength(0);
+    expect(await runner.getTask(task.id)).toEqual(before);
+    expect((await runner.logFor(task.id).readAll()).some(event => event.type === 'agent.asked')).toBe(false);
+    expect(readFileSync(path.join(repoRoot, 'README.md'), 'utf8')).toBe('# demo\n');
+    expect((await simpleGit(repoRoot).status()).isClean()).toBe(true);
+    if (scenario === 'wrong-branch') {
+      expect(readFileSync(path.join(before.runs[0]!.worktreePath!, 'keep.txt'), 'utf8')).toBe('preserve user output');
+    }
+  });
+
   it('ask：跨 agent 请求评审，携带 minimal 上下文，回答入 Timeline', async () => {
     const runner = makeRunner();
     const task = await runner.createTask({ repoRoot, objective: '实现 X 功能' });
@@ -145,7 +217,8 @@ describe('TaskRunner 引擎闭环', () => {
     const askCall = gemini.calls.find((c) => c.prompt.includes('review 这个实现'))!;
     expect(askCall).toBeDefined();
     expect(askCall.prompt).toContain('实现 X 功能'); // 上下文已注入
-    expect(askCall.opts?.cwd).toBeTruthy();
+    expect(askCall.opts?.cwd).toBe((await runner.getTask(task.id)).runs.at(-1)!.worktreePath);
+    expect(askCall.opts?.cwd).not.toBe(repoRoot);
 
     const events = await runner.logFor(task.id).readAll();
     expect(events.some((e) => e.type === 'agent.asked' && e.actor === 'claude')).toBe(true);
@@ -206,6 +279,45 @@ describe('TaskRunner 引擎闭环', () => {
     expect(outcome.capsule!.progress.rejectedApproaches[0]!.approach).toBe('方案 A');
   });
 
+  it('follow-up refuses a missing base before launching or checkpointing', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'do not invent empty evidence' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    const stored = await runner.getTask(task.id);
+    stored.baseRef = 'refs/heads/agentos-missing-test-base';
+    await runner.taskStore().saveTask(stored);
+    writeFileSync(path.join(first.worktreePath!, 'keep.txt'), 'uncommitted output');
+    const head = await simpleGit(first.worktreePath!).revparse(['HEAD']);
+    await expect(runner.followUp(task.id, { message: 'continue' })).rejects.toThrow();
+    expect((runner.adapterFor('claude') as StubAdapter).calls).toHaveLength(1);
+    expect(await simpleGit(first.worktreePath!).revparse(['HEAD'])).toBe(head);
+    expect((await simpleGit(first.worktreePath!).status()).not_added).toContain('keep.txt');
+    expect((await runner.getTask(task.id)).latestCapsuleId).toBe(first.capsule!.id);
+  });
+
+  it('follow-up retains output and old capsule when diff evidence cannot be read', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'fail honestly after producing output' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    const adapter = runner.adapterFor('claude') as StubAdapter;
+    const resume = adapter.resume.bind(adapter);
+    adapter.resume = async (...args) => {
+      writeFileSync(path.join(args[2]!.cwd!, 'followup-output.txt'), 'preserved output');
+      return resume(...args);
+    };
+    // Deliberate storage fault injection, not a model failure or model E2E.
+    runner.git.diffAgainstBase = async () => { throw new Error('injected diff read failure'); };
+    await expect(runner.followUp(task.id, { message: 'continue' })).rejects.toThrow('injected diff read failure');
+    const after = await runner.getTask(task.id);
+    expect(after.status).toBe('failed');
+    expect(after.latestCapsuleId).toBe(first.capsule!.id);
+    expect(after.runs).toHaveLength(1);
+    expect(readFileSync(path.join(first.worktreePath!, 'followup-output.txt'), 'utf8')).toBe('preserved output');
+    const events = await runner.logFor(task.id).readAll();
+    expect(events.filter(event => event.type === 'capsule.saved')).toHaveLength(1);
+    expect(events.at(-1)!.type).toBe('task.failed');
+  });
+
   it('followUp：同会话续聊走原生 resume，产生链式 Capsule 并入 Timeline', async () => {
     const runner = makeRunner();
     const claude = runner.adapterFor('claude') as StubAdapter;
@@ -232,6 +344,103 @@ describe('TaskRunner 引擎闭环', () => {
     const p1 = runner.runTask(task.id, { agentId: 'claude' });
     await expect(runner.runTask(task.id, { agentId: 'codex' })).rejects.toThrow(/已在运行/);
     await p1;
+  });
+
+  it('A to B to A carries both agents files and the selected permissions', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'round trip handoff' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    writeFileSync(path.join(first.worktreePath!, 'from-a.txt'), 'A');
+    await runner.git.checkpoint(first.worktreePath!, 'A output');
+    const second = await runner.swapAgent(task.id, { toAgentId: 'codex', profile: 'developer' });
+    const codex = runner.adapterFor('codex') as StubAdapter;
+    expect(codex.calls.find(c => !c.resumed)!.opts!.permissionFlags).toEqual(['--sandbox', 'workspace-write']);
+    writeFileSync(path.join(second.worktreePath!, 'from-b.txt'), 'B');
+    await runner.git.checkpoint(second.worktreePath!, 'B output');
+    const third = await runner.swapAgent(task.id, { toAgentId: 'claude' });
+    expect(readFileSync(path.join(third.worktreePath!, 'from-a.txt'), 'utf8')).toBe('A');
+    expect(readFileSync(path.join(third.worktreePath!, 'from-b.txt'), 'utf8')).toBe('B');
+    expect(third.capsule!.workspace.changedFiles.map(f => f.path)).toContain('from-a.txt');
+    expect(third.capsule!.workspace.changedFiles.map(f => f.path)).toContain('from-b.txt');
+    expect((await runner.getTask(task.id)).runs.at(-1)!.capsuleId).toBe(third.capsule!.id);
+  });
+  it('resume after handoff keeps the latest worktree and uncommitted output', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'recover latest workspace' });
+    await runner.runTask(task.id, { agentId: 'claude' });
+    const swapped = await runner.swapAgent(task.id, { toAgentId: 'codex' });
+    writeFileSync(path.join(swapped.worktreePath!, 'crash-draft.txt'), 'keep me');
+    const resumed = await runner.resumeTask(task.id);
+    expect(resumed.worktreePath).toBe(swapped.worktreePath);
+    expect(readFileSync(path.join(resumed.worktreePath!, 'crash-draft.txt'), 'utf8')).toBe('keep me');
+  });
+
+  it('follow-up never sends another agents native session id', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'session isolation' });
+    await runner.runTask(task.id, { agentId: 'claude' });
+    await runner.followUp(task.id, { agentId: 'codex', message: 'continue' });
+    const codex = runner.adapterFor('codex') as StubAdapter;
+    expect(codex.calls[0]!.resumed).toBe(false);
+    expect(codex.calls[0]!.prompt).toContain('session isolation');
+  });
+
+  it('missing worktree prevents follow-up from writing to the main checkout', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'workspace isolation' });
+    const first = await runner.runTask(task.id, { agentId: 'claude' });
+    await runner.git.removeWorktree(repoRoot, first.worktreePath!);
+    const claude = runner.adapterFor('claude') as StubAdapter;
+    const callsBefore = claude.calls.length;
+    await expect(runner.followUp(task.id, { message: 'edit files' })).rejects.toThrow(/worktree/);
+    expect(claude.calls.length).toBe(callsBefore);
+  });
+
+  it('failed setup leaves a retryable task instead of a permanent running state', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'retry setup' });
+    await expect(runner.runTask(task.id, { agentId: 'missing' })).rejects.toThrow(/未注册/);
+    expect((await runner.getTask(task.id)).status).toBe('failed');
+    await runner.runTask(task.id, { agentId: 'claude' });
+    expect((await runner.getTask(task.id)).status).toBe('waiting');
+  });
+
+  it('follow-up persists running state before starting the adapter', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'crash during follow-up' });
+    await runner.runTask(task.id, { agentId: 'claude' });
+    const claude = runner.adapterFor('claude')!;
+    claude.resume = async () => {
+      expect((await runner.getTask(task.id)).status).toBe('running');
+      throw new Error('injected adapter crash');
+    };
+    await expect(runner.followUp(task.id, { message: 'continue' })).rejects.toThrow('injected adapter crash');
+    expect((await runner.getTask(task.id)).status).toBe('failed');
+  });
+
+  it('task storage rejects traversal before creating directories', () => {
+    const runner = makeRunner();
+    expect(() => runner.taskStore().taskDir('../outside')).toThrow('Invalid storage id');
+    expect(() => runner.taskStore().capsuleFile('task_ok', '../outside')).toThrow('Invalid storage id');
+    expect(() => runner.logFor('..\\outside')).toThrow('Invalid storage id');
+  });
+
+  it('recovers a first run interrupted before the run record was saved', async () => {
+    const runner = makeRunner();
+    const task = await runner.createTask({ repoRoot, objective: 'first run recovery' });
+    const wt = await runner.git.createWorktree(repoRoot, { taskId: task.id, agentId: 'claude' });
+    writeFileSync(path.join(wt.path, 'unsaved.txt'), 'first run work');
+    await runner.logFor(task.id).append(task.id, 'system', 'worktree.created', {
+      path: wt.path, branch: wt.branch, base: wt.baseCommit, agentId: 'claude',
+    });
+    task.status = 'running';
+    await runner.taskStore().saveTask(task);
+    const restarted = makeRunner();
+    await restarted.recoverAll();
+    const outcome = await restarted.resumeTask(task.id);
+    expect(outcome.worktreePath).toBe(wt.path);
+    expect(readFileSync(path.join(wt.path, 'unsaved.txt'), 'utf8')).toBe('first run work');
+    expect((await restarted.getTask(task.id)).status).toBe('waiting');
   });
 
   it('swap 时向不存在的 capsule 拒绝', async () => {

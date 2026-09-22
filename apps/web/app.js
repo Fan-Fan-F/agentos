@@ -112,7 +112,7 @@ function showOnboardStep(i) {
         <p>在一个地方运行、切换、并行编排你机器上已有的每一个 AI Coding Agent。</p>
       </div>
       <div class="onboard-points">
-        <div class="onboard-point"><span class="pt-ic">🔒</span><span><b>本地优先</b> — 代码与数据全部留在本机，不上传任何服务器。</span></div>
+        <div class="onboard-point"><span class="pt-ic">🔒</span><span><b>本地优先</b> — AgentOS 的任务记录保存在本机；调用 Agent 时，所选 CLI 可能向模型服务发送代码与上下文。</span></div>
         <div class="onboard-point"><span class="pt-ic">🤝</span><span><b>不碰你的凭据</b> — 已登录的 agent 直接复用，绝不读取/迁移 Token。</span></div>
         <div class="onboard-point"><span class="pt-ic">🔁</span><span><b>会话可携带</b> — Claude 干到一半，Codex 一键接管，无需重新解释。</span></div>
       </div>`;
@@ -161,14 +161,8 @@ $('btnSettings').onclick = async () => {
   sel.innerHTML = '<option value="">Auto（自动路由）</option>' +
     state.agents.filter((a) => a.status === 'installed').map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('');
   sel.value = state.settings.defaultAgent || '';
-  const profSel = document.getElementById('setDefaultProfile');
-  profSel.value = state.settings.defaultProfile === 'developer' ? 'developer' : 'safe';
-  profSel.onchange = async (e) => {
-    state.settings = await api('/api/settings', { method: 'PUT', body: { ...state.settings, defaultProfile: e.target.value } });
-    toast('已保存');
-  };
   $('metaCard').innerHTML = state.meta
-    ? `版本 <b>v${esc(state.meta.version)}</b> · ${esc(state.meta.platform)} · ${esc(state.meta.node)}<br>数据目录：${esc(state.meta.dataDir)}<br>本地优先 · 数据永不上传`
+    ? `版本 <b>v${esc(state.meta.version)}</b> · ${esc(state.meta.platform)} · ${esc(state.meta.node)}<br>数据目录：${esc(state.meta.dataDir)}<br>任务记录保存在本机 · Agent 联网行为由所选 CLI 决定`
     : '';
   openModal('settingsModal');
 };
@@ -345,11 +339,12 @@ async function renderTaskDetail(taskId) {
   state.events = [];
   let data;
   try { data = await api(`/api/tasks/${taskId}`); } catch (e) { setTitle('任务不存在', ''); view(`<div class="card"><div class="empty"><div class="glyph">🕳️</div><h3>任务不存在</h3><p>${esc(e.message)}</p></div></div>`); return; }
+  if (state.currentTaskId !== taskId) return;
   const t = data.task;
   const lastRun = t.runs[t.runs.length - 1];
   setTitle(t.objective.length > 28 ? t.objective.slice(0, 28) + '…' : t.objective, `
-    ${statusBadge(t.status)}
-    ${lastRun?.branch ? `<span class="badge mono">${esc(lastRun.branch)}</span>` : ''}
+    <span id="taskStatus">${statusBadge(t.status)}
+    ${lastRun?.branch ? `<span class="badge mono">${esc(lastRun.branch)}</span>` : ''}</span>
     <button class="btn btn-sm btn-danger" id="btnDelTask">删除任务</button>`);
   const agents = state.agents.filter((a) => a.status === 'installed');
   const opts = (sel) => `<option value="auto"${sel === 'auto' ? ' selected' : ''}>Auto（自动路由）</option>` + agents.map((a) => `<option value="${esc(a.id)}"${sel === a.id ? ' selected' : ''}>${esc(a.name)}</option>`).join('');
@@ -383,14 +378,14 @@ async function renderTaskDetail(taskId) {
         </div>
         <label class="field-label">跟进 · 向最近运行的 Agent 发新指令（同会话续聊）</label>
         <div class="row"><input id="followupMsg" class="input" style="flex:1" placeholder="例如：把错误信息改成英文，并重跑测试" /><button class="btn" id="btnFollowup">跟进</button></div>
-        <label class="field-label">请教其他 Agent（携带任务上下文，只读不改文件）</label>
+        <label class="field-label">请教其他 Agent（在当前任务工作区评审；提示 Agent 不修改文件，实际权限由其配置决定）</label>
         <div class="row"><input id="askQuestion" class="input" style="flex:1" placeholder="例如：review 当前分支的实现是否存在边界问题" /><button class="btn" id="btnAsk">提问</button></div>
         <div id="busy" class="muted" style="font-size:12.5px;margin-top:10px;min-height:18px"></div>
       </div>
       <div class="segmented" style="margin-bottom:12px" id="detailTabs">
         <button data-tab="timeline" class="on">时间线</button>
         <button data-tab="capsule">Capsule</button>
-        <button data-tab="diff">Diff</button>
+        <button data-tab="diff">代码审查</button>
       </div>
       <div id="tabBody"></div>
     </div>`);
@@ -399,7 +394,20 @@ async function renderTaskDetail(taskId) {
     try { await api(`/api/tasks/${taskId}`, { method: 'DELETE' }); toast('已删除'); location.hash = '#/tasks'; } catch (e) { toast(e.message, true); }
   });
 
-  const busy = (m) => { $('busy').textContent = m || ''; };
+  const statusElement = $('taskStatus');
+  let statusRequest = 0;
+  async function refreshTaskStatus() {
+    const request = ++statusRequest;
+    try {
+      const fresh = (await api('/api/tasks/' + taskId)).task;
+      if (request !== statusRequest || state.currentTaskId !== taskId || !statusElement.isConnected) return;
+      const branch = fresh.runs[fresh.runs.length - 1]?.branch;
+      statusElement.innerHTML = statusBadge(fresh.status) + (branch ? '<span class="badge mono">' + esc(branch) + '</span>' : '');
+      state.tasks = state.tasks.map(task => task.id === taskId ? fresh : task);
+      renderRecents();
+    } catch { /* A later event or navigation retries the status read. */ }
+  }
+  const busy = (m) => { if (state.currentTaskId === taskId && $('busy')) $('busy').textContent = m || ''; };
   let currentProfile = state.settings.defaultProfile === 'developer' ? 'developer' : 'safe';
   document.querySelectorAll('#profileSeg button').forEach((b) => {
     b.classList.toggle('on', b.dataset.profile === currentProfile);
@@ -413,7 +421,7 @@ async function renderTaskDetail(taskId) {
     busy(`${prefix}：exit=${r.run.exitCode}${r.run.error ? ` ⚠ ${r.run.error}` : ''}${r.capsule ? ' · Capsule 已保存' : ''}`);
   };
   const guard = (fn) => async () => {
-    try { await fn(); } catch (e) { toast(e.message, true); } finally { busy(''); }
+    try { await fn(); } catch (e) { toast(e.message, true); } finally { busy(''); await refreshTaskStatus(); }
   };
   const agentId = () => $('opAgent').value;
   const agentId2 = () => $('opAgent2').value;
@@ -470,12 +478,15 @@ async function renderTaskDetail(taskId) {
 
   // Tabs
   const tabBody = $('tabBody');
+  let tabRequest = 0;
   function switchTab(tab) {
     state.activeTab = tab;
     document.querySelectorAll('#detailTabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
     renderTab();
   }
   async function renderTab() {
+    const request = ++tabRequest;
+    const isCurrent = () => request === tabRequest && state.currentTaskId === taskId && tabBody.isConnected;
     const tab = state.activeTab;
     if (tab === 'timeline') {
       if (!state.events.length) { tabBody.innerHTML = `<div class="card"><div class="empty"><div class="glyph">⚡</div><h3>时间线还是空的</h3><p>点击「运行」开始，事件会实时出现在这里</p></div></div>`; return; }
@@ -487,26 +498,88 @@ async function renderTaskDetail(taskId) {
       const override = state.tabOverride?.capsule;
       if (override) { tabBody.innerHTML = `<div class="card"><div class="card-title">Agent 回答</div><pre style="max-height:none">${esc(override)}</pre></div>`; return; }
       const md = await fetch(`/api/tasks/${taskId}/capsule?format=md`).then((r) => (r.ok ? r.text() : null));
+      if (!isCurrent()) return;
       tabBody.innerHTML = md
         ? `<div class="card"><div class="card-title">Universal Session Capsule</div><div class="card-hint">人可读的交接文档 · 保存于任务数据目录</div><pre style="max-height:none">${esc(md)}</pre></div>`
         : `<div class="card"><div class="empty"><div class="glyph">📦</div><h3>还没有 Capsule</h3><p>任务运行一次后自动生成</p></div></div>`;
     } else {
-      try {
-        const d = await api(`/api/tasks/${taskId}/diff`);
-        const body = d.note ? `<div class="muted" style="font-size:13px">${esc(d.note)}</div>`
-          : `<pre style="max-height:none">${esc(`分支 ${d.branch} · ${(d.files || []).length} 个文件\n\n${d.stat || (d.files || []).map((f) => `${f.change}\t${f.path}`).join('\n')}`)}</pre>`;
-        tabBody.innerHTML = `<div class="card"><div class="card-title">Git 变更</div>${body}</div>`;
-      } catch {
-        tabBody.innerHTML = `<div class="card"><div class="empty"><div class="glyph">🌿</div><h3>还没有变更</h3><p>任务运行后展示分支上的 diff</p></div></div>`;
-      }
+      await renderDiffReview(taskId, tabBody, isCurrent);
     }
   }
   document.querySelectorAll('#detailTabs button').forEach((b) => { b.onclick = () => switchTab(b.dataset.tab); });
   async function loadTab() { state.tabOverride = null; renderRecents(); renderTab(); }
 
-  connectWS(taskId);
+  connectWS(taskId, (event) => {
+    if (state.activeTab === 'timeline') renderTab();
+    if (['task.started', 'task.finished', 'task.failed', 'task.recovered'].includes(event.type)) void refreshTaskStatus();
+  });
   renderTab();
   renderRecents();
+}
+
+// Display repository text only as escaped content. Large patches never create unbounded DOM.
+function renderReviewPatch(patch) {
+  const lines = patch.split('\n');
+  const clipped = lines.length > 3000;
+  const html = lines.slice(0, 3000).map(line => {
+    const kind = /^(diff |index |--- |\+\+\+ |rename |similarity |new file|deleted file)/.test(line) ? 'meta'
+      : line.startsWith('@@') ? 'hunk' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : 'context';
+    return `<span class="diff-${kind}">${esc(line) || ' '}</span>`;
+  }).join('');
+  return { html, clipped };
+}
+
+async function renderDiffReview(taskId, container, isCurrent) {
+  container.innerHTML = '<div class="card muted">正在读取任务工作区的变更…</div>';
+  let summary;
+  try { summary = await api(`/api/tasks/${taskId}/diff`); }
+  catch (error) {
+    if (isCurrent()) container.innerHTML = `<div class="card"><div class="card-title">无法读取变更</div><p>${esc(error.message)}</p><p class="muted">请检查任务工作区后重新打开此页。读取失败不代表没有改动。</p></div>`;
+    return;
+  }
+  if (!isCurrent()) return;
+  const files = summary.files || [];
+  if (!files.length) {
+    container.innerHTML = `<div class="card"><div class="card-title">代码审查</div><p>${esc(summary.note || '当前没有已跟踪文件的差异。')}</p></div>`;
+    return;
+  }
+  const kinds = { added: '新增', modified: '修改', deleted: '删除', renamed: '重命名' };
+  container.innerHTML = `<div class="card">
+    <div class="card-title">代码审查 · ${files.length} 个文件</div>
+    <div class="card-hint">${esc(summary.branch)} · 与任务起点比较，包含已暂存和未暂存的已跟踪文件；未跟踪文件需先进入 checkpoint。</div>
+    <label class="field-label">选择要审查的文件</label>
+    <select class="input" data-review-files aria-label="选择要审查的文件">${files.map((file, index) => `<option value="${index}">${esc(kinds[file.change] || file.change)} · ${esc(file.previousPath ? file.previousPath + ' → ' + file.path : file.path)}</option>`).join('')}</select>
+    <div class="row" style="margin:12px 0"><button class="btn btn-sm" data-review-feedback>填写跟进意见</button><span class="muted">只填入文件位置，由你补充意见后发送。</span></div>
+    <div data-review-patch></div>
+  </div>`;
+  const selector = container.querySelector('[data-review-files]');
+  const body = container.querySelector('[data-review-patch]');
+  let patchRequest = 0;
+  async function loadPatch() {
+    const request = ++patchRequest;
+    const file = files[Number(selector.value)];
+    if (!file) return;
+    body.innerHTML = '<p class="muted">正在读取文件差异…</p>';
+    try {
+      const diff = await api(`/api/tasks/${taskId}/diff?file=${encodeURIComponent(file.path)}`);
+      if (!isCurrent() || request !== patchRequest) return;
+      if (diff.limited) { body.innerHTML = `<p class="muted">${esc(diff.note)}</p>`; return; }
+      const rendered = renderReviewPatch(diff.patch || '');
+      body.innerHTML = `${diff.binary ? '<p class="muted">二进制文件已变化，无法显示逐行文本差异。</p>' : ''}
+        ${rendered.clipped ? '<p class="muted">仅显示前 3000 行，请在任务工作区审查完整差异。</p>' : ''}
+        ${diff.patch ? `<pre class="diff-code">${rendered.html}</pre>` : '<p class="muted">该文件当前没有文本差异；文件可能已在读取期间改变，请刷新变更清单。</p>'}`;
+    } catch (error) {
+      if (isCurrent() && request === patchRequest) body.innerHTML = `<p>无法读取此文件：${esc(error.message)}</p>`;
+    }
+  }
+  selector.onchange = loadPatch;
+  container.querySelector('[data-review-feedback]').onclick = () => {
+    if (!isCurrent()) return;
+    const input = $('followupMsg');
+    if (!input.value.trim()) input.value = `请检查文件 ${files[Number(selector.value)].path}：`;
+    input.focus();
+  };
+  await loadPatch();
 }
 
 function renderEvent(e) {
@@ -529,26 +602,26 @@ function renderEvent(e) {
   </li>`;
 }
 
-function connectWS(taskId) {
+function connectWS(taskId, renderTimeline) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws?taskId=${encodeURIComponent(taskId)}`);
   state.ws = ws;
-  let intentional = false;
-  ws.onopen = () => { const el = document.getElementById('wsState'); if (el) el.textContent = '· 实时'; };
+  ws.onopen = () => { if (state.ws !== ws || state.currentTaskId !== taskId) return; const el = document.getElementById('wsState'); if (el) el.textContent = '· 实时'; };
   ws.onmessage = (m) => {
+    if (state.ws !== ws || state.currentTaskId !== taskId) return;
     let evt;
     try { evt = JSON.parse(m.data); } catch { return; }
     if (evt.type === 'history') state.events = evt.events || [];
     else { state.events.push(evt); }
-    if (state.activeTab === 'timeline') renderTab();
+    renderTimeline(evt);
   };
   ws.onclose = () => {
+    if (state.ws !== ws || state.currentTaskId !== taskId) return;
     // 服务重启/网络闪断：自动重连（同任务才重连），重连后服务端会重放 history
     const el = document.getElementById('wsState');
     if (el) el.textContent = '· 重连中…';
-    if (intentional || state.currentTaskId !== taskId) return;
     setTimeout(() => {
-      if (state.currentTaskId === taskId && (!state.ws || state.ws.readyState > 1)) connectWS(taskId);
+      if (state.currentTaskId === taskId && state.ws === ws) connectWS(taskId, renderTimeline);
     }, 2500);
   };
 }
@@ -641,6 +714,7 @@ function view(html) { $('view').innerHTML = `<div class="view-inner">${html}</di
 
 async function route() {
   if (state.ws) { state.ws.close(); state.ws = null; }
+  state.currentTaskId = null;
   const hash = location.hash || '#/tasks';
   const m = hash.match(/^#\/task\/([^?]+)/);
   document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', hash.startsWith(`#${a.dataset.view}`) || (m && a.dataset.view === 'tasks')));
@@ -657,6 +731,7 @@ window.addEventListener('hashchange', route);
     [state.meta, state.settings] = await Promise.all([api('/api/meta'), api('/api/settings')]);
     $('version').textContent = `v${state.meta.version}`;
     state.agents = await api('/api/agents');
+    state.tasks = await api('/api/tasks');
   } catch (e) {
     document.body.innerHTML = `<div style="display:flex;height:100vh;align-items:center;justify-content:center;flex-direction:column;gap:10px;color:#a4a4a4;font-family:sans-serif">
       <div style="font-size:30px">🔌</div><div>无法连接 AgentOS 服务</div>

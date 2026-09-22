@@ -1,6 +1,6 @@
 {
   "name": "agentos",
-  "version": "0.4.0",
+  "version": "0.5.0-rc.1",
   "private": true,
   "description": "AgentOS — Build once, use every agent. A local-first platform to run, switch, fork and orchestrate multiple AI coding agents with portable sessions.",
   "license": "MIT",
@@ -19,7 +19,8 @@
     "desktop": "node scripts/desktop.mjs",
     "setup": "node scripts/setup.mjs",
     "doctor": "node apps/cli/bin/agentos.mjs doctor",
-    "e2e": "node scripts/real-e2e.mjs"
+    "e2e": "node scripts/real-e2e.mjs",
+    "e2e:recovery": "node scripts/crash-recovery-e2e.mjs"
   },
   "dependencies": {
     "zod": "^3.25.76",

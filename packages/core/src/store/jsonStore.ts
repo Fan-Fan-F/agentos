@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { assertStorageId } from '../ids.js';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -34,7 +35,7 @@ export class JsonStore<T extends { id: string }> {
   }
 
   private fileFor(id: string): string {
-    return path.join(this.dir, `${id}.json`);
+    return path.join(this.dir, `${assertStorageId(id)}.json`);
   }
 
   async put(value: T): Promise<void> {

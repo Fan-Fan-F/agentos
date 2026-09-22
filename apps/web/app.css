@@ -326,3 +326,15 @@ tr:last-child td { border-bottom: none; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+/* Literal unified patches: bounded rendering and no injected HTML. */
+.diff-code { max-height: 65vh; overflow: auto; margin: 0; padding: 10px; white-space: pre; font-size: 12px; }
+.diff-code > span { display: block; min-height: 1.5em; }
+.diff-add { background: rgba(46,160,67,.14); color: #57c67c; }
+.diff-del { background: rgba(248,81,73,.13); color: #f08b84; }
+.diff-hunk { color: #86b8ee; background: rgba(70,130,210,.12); }
+.diff-meta { color: var(--muted); }
+
+html[data-theme="light"] .diff-add { color: #176b35; }
+html[data-theme="light"] .diff-del { color: #a32220; }
+html[data-theme="light"] .diff-hunk { color: #24558a; }

@@ -11,12 +11,14 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { simpleGit } from 'simple-git';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), '..');
-const { TaskRunner, createDefaultAdapters, probeVersion } = await import(pathToFile(root, 'packages/agents/dist/index.js'));
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { TaskRunner, createDefaultAdapters } = await import(pathToFile(root, 'packages/agents/dist/index.js'));
 
 function pathToFile(rootPath, rel) {
-  return 'file:///' + path.join(rootPath, rel).replace(/\\/g, '/');
+  return pathToFileURL(path.join(rootPath, rel)).href;
 }
 
 const log = [];
@@ -45,25 +47,13 @@ async function main() {
     '创建 src/fib.js，导出函数 fib(n)（n>=0，记忆化迭代实现）；创建 test/fib.test.js，用 node:test 写 3 个断言（fib(0)=0, fib(10)=55, fib(20)=6765）；运行 node --test 确认全部通过。只创建这两个文件，不要改动其他文件。';
   const customRepo = argOf('--repo');
 
-  // 0. 环境前置：二进制存在 + 登录标记（stat，不读内容）+ 版本探测（夜间 dogfooding 授权）
-  const home = os.homedir();
-  const appData = process.env.APPDATA || (process.platform === 'win32' ? path.join(home, 'AppData', 'Roaming') : '');
-  const claudeCmd = process.platform === 'win32' ? path.join(appData, 'npm', 'claude.cmd') : 'claude';
-  const codexCmd = process.platform === 'win32' ? path.join(appData, 'npm', 'codex.cmd') : 'codex';
-  const claudeVer = await probeVersion(claudeCmd).catch(() => undefined);
-  const codexVer = await probeVersion(codexCmd).catch(() => undefined);
-  const pre = {
-    claudeBin: fs.existsSync(claudeCmd),
-    claudeAuth: fs.existsSync(path.join(home, '.claude.json')),
-    claudeVer,
-    codexBin: fs.existsSync(codexCmd),
-    codexAuth: fs.existsSync(path.join(home, '.codex', 'auth.json')),
-    codexVer,
-  };
-  say(`前置: ${JSON.stringify(pre)}`);
-  if (!pre.claudeBin || !pre.codexBin) {
-    say('缺少 agent 二进制，无法真实 E2E');
-    process.exit(1);
+  // 0. Resolve the selected adapters without reading credentials.
+  const adapters = createDefaultAdapters();
+  for (const id of new Set([fromAgent, toAgent])) {
+    const adapter = adapters.find(a => a.id === id);
+    const availability = await adapter?.isAvailable();
+    say(id + ' availability: ' + JSON.stringify(availability));
+    if (!availability?.available) throw new Error(id + ' unavailable: real E2E NOT VERIFIED');
   }
 
   // 1. 真实临时 git 仓库（或 --repo 指定的既有仓库）
@@ -90,7 +80,7 @@ async function main() {
 
   // 2. TaskRunner（真实适配器）
   const dataDir = path.join(tmp, 'agentos-home');
-  const runner = new TaskRunner({ dataDir, adapters: createDefaultAdapters(), defaultTimeoutMs: 8 * 60_000 });
+  const runner = new TaskRunner({ dataDir, adapters, defaultTimeoutMs: 8 * 60_000 });
 
   const devProfile = 'developer'; // ADR-010 权限档映射（同时真实验证映射 flag）
 
@@ -106,11 +96,11 @@ async function main() {
   say(`${fromAgent} 错误诊断: ${r1.run.error ?? '（无）'}`);
   const claudeQuotaBlocked = r1.run.exitCode !== 0 && /\[(quota|version|auth|rate|network|model)\]/.test(r1.run.error ?? '');
   if (claudeQuotaBlocked) {
-    assert(true, `${fromAgent} 失败被正确诊断并给出处置建议（见 docs/blockers.md）`);
+    assert(false, `${fromAgent} 被外部条件阻塞：诊断成功不等于真实 E2E 成功`);
   } else {
     assert(r1.run.exitCode === 0 && !r1.run.error, `${fromAgent} 运行成功`);
   }
-  const filesAfterClaude = await fsp.readdir(path.join(repoRoot, 'src'), { recursive: true }).catch(() => []);
+  const filesAfterClaude = await fsp.readdir(path.join(r1.worktreePath, 'src'), { recursive: true }).catch(() => []);
   say(`src/ 内容: ${filesAfterClaude.join(', ') || '（空）'}`);
 
   // 4. 接管（Capsule → 七问验证；接管失败时验证诊断与探针跳过）
@@ -132,6 +122,7 @@ async function main() {
     };
     for (const [k, v] of Object.entries(checks)) assert(v, `codex 七问包含「${k}」`);
   } else {
+    assert(false, '真实接管未通过');
     assert(probeSkipped, 'codex 接管失败 → 探针被正确跳过（不浪费注定失败的调用）');
     assert(/\[(version|quota|auth|model|rate|network)\]/.test(r2.run.error ?? ''), `codex 失败被诊断为明确类别: ${r2.run.error?.slice(0, 80)}`);
   }
@@ -141,13 +132,14 @@ async function main() {
   let reviewAnswer = '';
   try {
     const r = await runner.askAgent(task.id, {
-      toAgentId: 'claude',
+      toAgentId: fromAgent,
       question: '请 review 当前分支相对基线的全部改动：fib 实现与测试是否正确？是否存在边界问题？只回答结论与要点。',
     });
     reviewAnswer = r.answer;
     say(`claude 评审（前 400 字）:\n${reviewAnswer.slice(0, 400)}`);
     assert(reviewAnswer.trim().length > 30 && !/API Error/i.test(reviewAnswer), '评审返回了实质内容（非错误文本）');
   } catch (err) {
+    assert(false, '真实评审未完成');
     say(`评审被拒绝（正确行为）: ${(err).message}`);
     assert(/\[(quota|auth|rate|network|model|version)\]/.test((err).message), 'ask 失败抛出带类别诊断的错误，而不是错误文本冒充回答');
   }
@@ -155,21 +147,33 @@ async function main() {
   // 6. codex 跟进修复
   say('▶ [4/5] codex 跟进…');
   const r3 = await runner.followUp(task.id, {
-    agentId: 'codex',
+    agentId: toAgent,
     profile: devProfile,
     message: '运行 node --test 确认测试全部通过；若测试文件缺失则补上；然后输出一段总结：当前任务状态、已完成、下一步。',
   });
   say(`codex 跟进: exit=${r3.run.exitCode} 诊断: ${r3.run.error ?? '（无）'}`);
 
+  assert(r3.run.exitCode === 0 && !r3.run.error, 'follow-up succeeded');
+  const finalWorktree = r3.worktreePath ?? r2.worktreePath;
+  if (!argOf('--objective')) {
+    for (const expected of ['src/fib.js', 'test/fib.test.js']) {
+      assert(fs.existsSync(path.join(finalWorktree, expected)), 'real artifact: ' + expected);
+    }
+    const tests = spawnSync(process.execPath, ['--test', 'test/fib.test.js'], {
+      cwd: finalWorktree, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    say('Independent node --test: ' + (tests.stdout + tests.stderr).slice(-4000));
+    assert(tests.status === 0 && !tests.error, 'independent artifact tests passed');
+  }
+
   // 7. 汇总
   say('▶ [5/5] 汇总验证…');
   const taskFinal = await runner.getTask(task.id);
-  const diff = await runner.git.diffAgainstBase(r2.worktreePath, taskFinal.baseRef);
+  const diff = await runner.git.diffAgainstBase(finalWorktree, taskFinal.baseRef);
   say(`最终变更文件: ${diff.files.map((f) => `${f.change}:${f.path}`).join(', ')}`);
-  const hasHandoff = diff.files.some((f) => f.path.includes('HANDOFF.md'));
   const hasRealChanges = diff.files.some((f) => !f.path.includes('.agentos/'));
   if (hasRealChanges) assert(diff.files.length >= 2, '分支上有真实文件变更');
-  else assert(hasHandoff, '外部阻塞下：交接机制本身在工作（HANDOFF.md 已提交到分支）');
+  else assert(false, '没有真实代码产出；HANDOFF.md 不构成 E2E 成功');
   const allEvents = await runner.logFor(task.id).readAll();
   say(`Timeline 共 ${allEvents.length} 条事件`);
   assert(allEvents.length > 15, 'Timeline 完整记录了全流程');
@@ -182,10 +186,10 @@ async function main() {
   const report = [
     '# 真实 E2E Dogfooding 报告',
     '',
-    `- 日期：2026-09-19`,
+    `- 日期：${new Date().toISOString()}`,
     `- 仓库：${repoRoot}`,
     `- 数据目录：${dataDir}`,
-    `- 结果：${process.exitCode ? '❌ 存在失败断言' : '✅ 闭环全通'}`,
+    `- 结果：${process.exitCode ? 'FAILED / BLOCKED — 真实闭环未通过' : 'PASS — 真实闭环通过'}`,
     '',
     '## 关键结果',
     ...log.map((l) => `- ${l}`),
@@ -201,10 +205,10 @@ async function main() {
     '```',
     '',
     '## Timeline 全事件',
-    ...events.map((e) => `- ${e.ts.slice(11, 19)} [${e.actor}] ${e.type}`),
+    ...allEvents.map((e) => `- ${e.ts.slice(11, 19)} [${e.actor}] ${e.type}`),
   ].join('\n');
-  await fsp.writeFile(path.join(reportDir, '2026-09-19-real-e2e.md'), report, 'utf8');
-  say(`报告已写入 docs/dogfood/2026-09-19-real-e2e.md`);
+  await fsp.writeFile(path.join(reportDir, new Date().toISOString().replace(/[:.]/g, '-') + '-real-e2e.md'), report, 'utf8');
+  say(`报告已写入 ${reportDir}`);
   say(`任务数据: ${runner.taskStore().taskDir(task.id)}`);
 }
 

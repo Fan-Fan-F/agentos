@@ -1,3 +1,4 @@
+import { compileContext } from '../src/context/compiler.js';
 import { describe, expect, it } from 'vitest';
 import { createCapsule, parseCapsule, capsuleToMarkdown, CapsuleVersionError } from '../src/capsule/capsule.js';
 
@@ -76,4 +77,16 @@ describe('Universal Session Capsule v1', () => {
     expect(md).toContain('通过 3 / 失败 1');
     expect(md).toContain('交接摘要');
   });
+});
+
+it('keeps rename provenance in JSON, Markdown and compiled handoff context', () => {
+  const capsule = createCapsule({
+    task: { id: 'rename', objective: 'continue after rename' }, status: 'in-progress',
+    origin: { agentId: 'claude' }, progress: {},
+    workspace: { repoRoot: 'D:/test', changedFiles: [{ path: '新 文件.txt', previousPath: '旧 文件.txt', change: 'renamed' }] },
+  });
+  const parsed = parseCapsule(JSON.parse(JSON.stringify(capsule)));
+  expect(parsed.workspace.changedFiles[0]!.previousPath).toBe('旧 文件.txt');
+  expect(capsuleToMarkdown(parsed)).toContain('旧 文件.txt → 新 文件.txt');
+  expect(compileContext(parsed, 'standard').markdown).toContain('旧 文件.txt → 新 文件.txt');
 });

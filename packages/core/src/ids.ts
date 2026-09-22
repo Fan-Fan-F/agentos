@@ -10,3 +10,11 @@ export function newId(prefix: string): string {
 export function nowIso(): string {
   return new Date().toISOString();
 }
+
+/** Reject path separators, traversal, alternate streams and Windows device names. */
+export function assertStorageId(id: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(id)) {
+    throw new Error('Invalid storage id');
+  }
+  return id;
+}

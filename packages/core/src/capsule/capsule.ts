@@ -52,6 +52,11 @@ export function capsuleToMarkdown(c: Capsule): string {
     lines.push(bullet(c.task.userInstructions));
   }
   lines.push('');
+  if (c.permissions.expectations.length) {
+    lines.push('## 权限约定');
+    lines.push(bullet(c.permissions.expectations));
+    lines.push('');
+  }
   lines.push('## 已完成工作');
   lines.push(bullet(c.progress.completed));
   lines.push('');
@@ -79,7 +84,7 @@ export function capsuleToMarkdown(c: Capsule): string {
   if (c.workspace.worktreePath) lines.push(`- worktree: ${c.workspace.worktreePath}`);
   if (c.workspace.changedFiles.length) {
     lines.push('- 变更文件:');
-    lines.push(c.workspace.changedFiles.map((f) => `  - [${f.change}] ${f.path}`).join('\n'));
+    lines.push(c.workspace.changedFiles.map((f) => `  - [${f.change}] ${f.previousPath ? f.previousPath + ' → ' : ''}${f.path}`).join('\n'));
   }
   if (c.workspace.diffStat) {
     lines.push('');
@@ -100,6 +105,9 @@ export function capsuleToMarkdown(c: Capsule): string {
         .map((t) => `- \`${t.command}\` — 通过 ${t.passed} / 失败 ${t.failed}${t.summary ? `（${t.summary}）` : ''}`)
         .join('\n'),
     );
+  }
+  if (!c.verification.tests.length) {
+    lines.push('', '## 验证', '未记录测试结果，不能据此认定测试通过。Agent 的完成回复不等于独立验证。');
   }
   if (c.context.keyFacts.length) {
     lines.push('');

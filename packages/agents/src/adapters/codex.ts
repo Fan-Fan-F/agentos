@@ -29,10 +29,11 @@ export function createCodexAdapter(binary = 'codex'): CliHeadlessAdapter {
       return {
         args: [
           'exec',
+          ...(opts?.permissionFlags ?? []),
           'resume',
           sessionRef,
           '--json',
-          ...(opts?.permissionFlags ?? []),
+          ...(opts?.model ? ['-m', opts.model] : []),
           ...(opts?.extraArgs ?? []),
           '-',
         ],

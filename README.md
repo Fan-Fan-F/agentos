@@ -12,14 +12,14 @@ AgentOS 不是又一个 "Claude Code + Codex + Gemini CLI 启动器"。它要解
 
 ## 当前状态
 
-**M1 里程碑（真实可运行的最小闭环）**，详见 [ROADMAP.md](./ROADMAP.md) 与 [TESTING.md](./TESTING.md)。
+**v0.5.0-rc.1 预览版：恢复、安全、交接与代码审查升级**，详见 [ROADMAP.md](./ROADMAP.md) 与 [TESTING.md](./TESTING.md)。
 
-已实现（真实运行，非 demo）：
+已实现能力（实际模型支持以验证记录为准）：
 
 | 能力 | 状态 |
 |---|---|
 | 本机 Agent 发现（PATH/npm 全局/家目录标记，只读） | ✅ Implemented |
-| Headless 适配器：Claude Code / Codex / Gemini CLI / OpenCode + Stub | ✅ Implemented（已真实调用验证：启动/解析/诊断/交接链路；代码产出半程被测试账户问题阻塞，见 docs/blockers.md） |
+| Headless 适配器：Claude Code / Codex / Gemini CLI / OpenCode + Stub | ✅ Implemented（包含四家适配器；Claude/Codex 真实调用被外部条件阻塞，Gemini/OpenCode 尚未验证。Stub 只用于契约测试，见 docs/blockers.md） |
 | Universal Session Capsule（v1，版本化 + Markdown 视图） | ✅ Implemented |
 | Context Compiler（minimal/standard/full + 预算裁剪） | ✅ Implemented |
 | Git Workspace Engine（独立 worktree / checkpoint / diff / commits） | ✅ Implemented |
@@ -29,10 +29,19 @@ AgentOS 不是又一个 "Claude Code + Codex + Gemini CLI 启动器"。它要解
 | 统一 Timeline（JSONL 持久化 + WebSocket 实时推送） | ✅ Implemented |
 | followUp 同会话跟进（原生 resume 优先） | ✅ Implemented |
 | 会话导入（裸 Claude Code / Codex 会话 → Capsule → 任意 agent 接管，只读） | ✅ Implemented |
-| Windows / macOS / Linux（launcher 解析 + stdin/@file 提示词通道 + CI 三平台矩阵） | ✅ Implemented（CI 提交后持续验证） |
+| Windows / macOS / Linux（launcher 解析 + stdin/@file 提示词通道 + CI 三平台矩阵） | ✅ Implemented（CI 三平台矩阵；具体结果以当前提交的 Actions 为准） |
 | 本地 Web UI（零构建静态 SPA） | ✅ Implemented (Minimal) |
 | CLI：`doctor` / `serve` / `capsule` | ✅ Implemented |
 | ACP 适配器 / MCP Hub / Permission Broker / Workflow Canvas / Tauri 壳 | ⏳ 后续里程碑（见 ROADMAP） |
+
+## 本次更新与升级
+
+- 逐文件代码审查：实际增删、中文重命名、二进制与超限说明，文件意见可带入跟进草稿。
+- 恢复与交接：保护未提交 worktree，保留权限和累计上下文，拒绝缺失或不属于当前任务的目录。
+- 本地服务：数据目录单实例锁、HTTP/WebSocket 来源检查、权限参数白名单、损坏时间线恢复。
+- 这是预览版；真实模型成功接力仍未通过，不等同于生产稳定性认证。详见 [CHANGELOG](./CHANGELOG.md) 与 [已知限制](./docs/blockers.md)。
+
+从 [Releases](https://github.com/Fan-Fan-F/agentos/releases) 下载 **v0.5.0-rc.1** 源码包，解压到新的文件夹，关闭旧版服务后运行新目录中的启动器。保留旧版目录和原数据备份，勿把源码包覆盖到用户数据目录；若曾设置 AGENTOS_HOME，继续使用同一设置。默认数据目录不随源码路径变化；现有 Capsule v1 支持新增的可选重命名字段，不要求迁移。首次构建需要 Node.js ≥20.10、Git 和联网下载 npm 依赖，Agent CLI 由用户自行安装和登录。
 
 ## 快速开始
 
@@ -46,7 +55,7 @@ npm run desktop          # 启动服务并打开桌面窗口（默认 http://loc
 开发者方式：
 
 ```bash
-# 于仓库根目录（Windows 示例：D:\project\agentos）
+# 于仓库根目录（Windows 示例：<repo_root>）
 npm install
 npm run build
 npm test          # 单元 + 集成 + 适配器契约测试

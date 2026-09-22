@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import fs from 'node:fs';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { ChangedFile, FileChangeKind } from '../types.js';
@@ -78,14 +80,10 @@ export class GitEngine {
     const wtPath = path.join(dir, `${sanitizeRefPart(opts.taskId)}-${sanitizeRefPart(opts.agentId)}`);
     fs.mkdirSync(dir, { recursive: true });
     const g = git(repoRoot);
-    // 幂等：同 taskId+agentId 重跑时先清掉残留 worktree（该目录完全归 AgentOS 所有）
+    // Recovery must never discard the index, working files, or untracked output.
     if (fs.existsSync(wtPath)) {
-      try {
-        await g.raw(['worktree', 'remove', '--force', wtPath]);
-      } catch {
-        // 未注册的目录：直接删
-      }
-      fs.rmSync(wtPath, { recursive: true, force: true });
+      await this.assertWorktree(repoRoot, wtPath, branch);
+      return { path: wtPath, branch, baseCommit };
     }
     try {
       await g.raw(['worktree', 'add', '-b', branch, wtPath, baseCommit]);
@@ -99,6 +97,19 @@ export class GitEngine {
       }
     }
     return { path: wtPath, branch, baseCommit };
+  }
+
+  /** Refuse moved/replaced workspaces before staging files or launching an Agent. */
+  async assertWorktree(repoRoot: string, wtPath: string, branch: string): Promise<void> {
+    if (!fs.existsSync(wtPath)) throw new GitError('任务 worktree 不存在，已停止操作: ' + wtPath);
+    const realDestination = fs.realpathSync(wtPath);
+    const registered = (await this.listWorktrees(repoRoot)).find(entry =>
+      fs.existsSync(entry.path) && fs.realpathSync(entry.path) === realDestination,
+    );
+    if (realDestination === fs.realpathSync(repoRoot) || !registered || registered.branch !== branch ||
+        await this.currentBranch(wtPath) !== branch) {
+      throw new GitError('已有目录不是预期的 worktree，已保留所有文件: ' + wtPath);
+    }
   }
 
   async listWorktrees(repoRoot: string): Promise<Array<{ path: string; branch?: string; head: string }>> {
@@ -128,6 +139,9 @@ export class GitEngine {
   /** 把 worktree 内所有变更提交为 checkpoint（无变更则跳过）。 */
   async checkpoint(wtRoot: string, label: string): Promise<{ committed: boolean; hash?: string }> {
     const g = git(wtRoot);
+    if ((await g.status()).conflicted.length) {
+      throw new GitError('worktree 存在未解决的 Git 冲突，已保留索引与文件；请解决冲突后重试。');
+    }
     await g.add('-A');
     const status = await g.status();
     const dirty =
@@ -139,23 +153,49 @@ export class GitEngine {
 
   async diffAgainstBase(wtRoot: string, baseRef: string): Promise<DiffSummary> {
     const g = git(wtRoot);
-    const nameStatus = await g.raw(['diff', '--name-status', baseRef]);
+    // NUL delimiters preserve literal paths regardless of core.quotepath or whitespace.
+    const nameStatus = await g.raw(['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', baseRef, '--']);
+    const records = nameStatus.split('\0');
     const files: ChangedFile[] = [];
-    for (const line of nameStatus.split('\n')) {
-      const t = line.trim();
-      if (!t) continue;
-      const [status, ...rest] = t.split('\t');
-      const kind = (status?.[0] ?? 'M') as string;
-      const map: Record<string, FileChangeKind> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed' };
-      files.push({ path: rest.join('\t'), change: map[kind] ?? 'modified' });
+    const changes: Record<string, FileChangeKind> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'added' };
+    for (let i = 0; i < records.length && records[i];) {
+      const kind = records[i++]![0]!;
+      // Rename/copy records contain source then destination; ChangedFile.path identifies the result.
+      const previousPath = kind === 'R' || kind === 'C' ? records[i++] : undefined;
+      const filePath = records[i++];
+      if (!filePath) throw new GitError('Git diff returned an incomplete file record');
+      files.push({ path: filePath, change: changes[kind] ?? 'modified', ...(previousPath ? { previousPath } : {}) });
     }
     let stat = '';
     try {
-      stat = await g.raw(['diff', '--stat', baseRef]);
+      stat = await g.raw(['diff', '--no-ext-diff', '--no-textconv', '--stat', baseRef, '--']);
     } catch {
       stat = '';
     }
     return { files, stat };
+  }
+
+  /** Read a single changed file as a bounded patch; never invoke repository diff helpers. */
+  async filePatch(wtRoot: string, baseRef: string, filePath: string): Promise<{
+    patch: string; limited: boolean; binary: boolean; note?: string;
+  }> {
+    if (!filePath || filePath.includes('\0') || filePath.length > 4096) throw new GitError('无效的文件路径');
+    const summary = await this.diffAgainstBase(wtRoot, baseRef);
+    const file = summary.files.find(entry => entry.path === filePath);
+    if (!file) throw new GitError('该文件不在当前任务变更清单中，请刷新后重试');
+    const paths = file.previousPath ? [file.previousPath, file.path] : [file.path];
+    try {
+      const { stdout } = await promisify(execFile)('git', [
+        '--no-pager', '--literal-pathspecs', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false',
+        'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--unified=3', baseRef, '--', ...paths,
+      ], { cwd: wtRoot, windowsHide: true, encoding: 'utf8', timeout: 10_000, maxBuffer: 512 * 1024 });
+      return { patch: stdout, limited: false, binary: /^Binary files |^GIT binary patch/m.test(stdout) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+        return { patch: '', limited: true, binary: false, note: '该文件差异超过 512 KiB，未加载正文。请在任务工作区使用本地 Git 工具审查。' };
+      }
+      throw new GitError('无法读取文件差异，请检查任务工作区后重试', String(error));
+    }
   }
 
   async commitsBetween(wtRoot: string, baseRef: string): Promise<CommitInfo[]> {
