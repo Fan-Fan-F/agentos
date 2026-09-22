@@ -17,7 +17,7 @@ function fakeEnv() {
   // Windows 上 npm shim 是 .cmd；同时造无扩展名文件兼容 unix
   const shim = (name: string) => {
     writeFileSync(path.join(binDir, name + '.cmd'), 'echo fake\r\n');
-    writeFileSync(path.join(binDir, name), '#!/bin/sh\necho fake\n');
+    writeFileSync(path.join(binDir, name), '#!/bin/sh\necho fake\n', { mode: 0o755 });
   };
   shim('claude');
   shim('codex');
