@@ -1,6 +1,6 @@
 {
   "name": "@agentos/agents",
-  "version": "0.1.0",
+  "version": "0.5.0-rc.1",
   "description": "AgentOS agent layer: local agent discovery, installer, headless CLI adapters (Claude Code, Codex, Gemini CLI, OpenCode), ACP skeleton, handoff and task runner.",
   "license": "MIT",
   "type": "module",
@@ -16,7 +16,7 @@
     "build": "tsc -p ."
   },
   "dependencies": {
-    "@agentos/core": "^0.1.0",
+    "@agentos/core": "0.5.0-rc.1",
     "zod": "^3.25.76",
     "nanoid": "^5.1.5"
   }

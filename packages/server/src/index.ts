@@ -5,8 +5,11 @@ import { fileURLToPath } from 'node:url';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { WebSocketServer } from 'ws';
+import { localRequestAllowed } from './localAccess.js';
+import { acquireDataDirectoryLock } from './dataDirectoryLock.js';
 import {
   defaultDataDir,
+  assertStorageId,
   JsonStore,
   newId,
   nowIso,
@@ -14,6 +17,7 @@ import {
 } from '@agentos/core';
 import {
   createDefaultAdapters,
+  validatePermissionSelection,
   executeInstall,
   listClaudeSessions,
   listCodexSessions,
@@ -55,36 +59,21 @@ function resolveWebRoot(explicit?: string): string | undefined {
   return fs.existsSync(candidate) ? candidate : undefined;
 }
 
-/**
- * 权限参数黑名单（SECURITY.md）：API 层拒绝 bypass 类 flag。
- * 'full' 权限档等价于 bypass —— 同样受 AGENTOS_ALLOW_BYPASS 门禁。
- * 确有需要时由用户显式设置 AGENTOS_ALLOW_BYPASS=1 启动服务并自担风险。
- */
-const DANGEROUS_FLAG_RE = /dangerously|bypass|yolo|full-access/i;
-
-function guardProfileSelection(body: { profile?: string; permissionFlags?: string[] }): void {
-  if (process.env.AGENTOS_ALLOW_BYPASS === '1') return;
-  if (body.profile === 'full') {
-    throw new Error("权限档 'full' 等价于解除沙箱，已被平台策略拒绝；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险。");
-  }
-  const bad = (body.permissionFlags ?? []).filter((f) => DANGEROUS_FLAG_RE.test(f));
-  if (bad.length) {
-    throw new Error(`拒绝危险权限参数: ${bad.join(', ')}（平台策略禁止绕过 agent 权限；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险）`);
-  }
-}
-
-function sanitizePermissionFlags(flags?: string[]): string[] | undefined {
-  if (!flags?.length) return undefined;
-  if (process.env.AGENTOS_ALLOW_BYPASS === '1') return flags;
-  const bad = flags.filter((f) => DANGEROUS_FLAG_RE.test(f));
-  if (bad.length) {
-    throw new Error(`拒绝危险权限参数: ${bad.join(', ')}（平台策略禁止绕过 agent 权限；如确需请以 AGENTOS_ALLOW_BYPASS=1 启动并自担风险）`);
-  }
-  return flags;
-}
-
 /** 构建本地 API 服务（依赖注入便于测试；ADR-001）。 */
 export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Promise<AgentOSServer> {
+  const dataDir = opts.dataDir ?? defaultDataDir();
+  const release = await acquireDataDirectoryLock(dataDir);
+  try {
+    const server = await buildAgentOSServer({ ...opts, dataDir });
+    server.app.addHook('onClose', async () => { await release(); });
+    return server;
+  } catch (error) {
+    await release();
+    throw error;
+  }
+}
+
+async function buildAgentOSServer(opts: AgentOSServerOptions): Promise<AgentOSServer> {
   const dataDir = opts.dataDir ?? defaultDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
 
@@ -96,15 +85,20 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
   const projects = new JsonStore<ProjectRecord>(path.join(dataDir, 'projects'));
   const imports = new JsonStore<Record<string, unknown> & { id: string }>(path.join(dataDir, 'imports'));
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  app.addHook('onRequest', async (req, reply) => {
+    if (!localRequestAllowed(req.headers)) {
+      return reply.code(403).send({ error: '只允许来自本机 AgentOS 界面的请求' });
+    }
+  });
 
   // 启动即恢复：把"上次运行中"的任务标记为 interrupted（任务书 §24）
   const recovered = await runner.recoverAll();
   if (recovered.length) app.log.warn({ recovered }, 'recovered interrupted tasks');
 
-  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.4.0' }));
+  app.get('/api/health', async () => ({ ok: true, name: 'agentos', version: '0.5.0-rc.1' }));
 
   app.get('/api/meta', async () => ({
-    version: '0.4.0',
+    version: '0.5.0-rc.1',
     node: process.version,
     platform: process.platform,
     dataDir,
@@ -295,8 +289,8 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { agentId?: string; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[]; allowedTools?: string[]; timeoutMs?: number };
     try {
-      guardProfileSelection(body);
-      return await runner.runTask(id, { ...body, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+      validatePermissionSelection(body, body.agentId === 'auto' ? undefined : body.agentId);
+      return await runner.runTask(id, body);
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -307,8 +301,8 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const body = (req.body ?? {}) as { toAgentId?: string; level?: 'minimal' | 'standard' | 'full'; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[] };
     if (!body.toAgentId) return reply.code(400).send({ error: '缺少 toAgentId' });
     try {
-      guardProfileSelection(body);
-      return await runner.swapAgent(id, { toAgentId: body.toAgentId, level: body.level === 'full' ? undefined : body.level, profile: body.profile, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+      validatePermissionSelection(body, body.toAgentId);
+      return await runner.swapAgent(id, { toAgentId: body.toAgentId, level: body.level, profile: body.profile, permissionFlags: body.permissionFlags });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -319,7 +313,7 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const body = (req.body ?? {}) as { message?: string; agentId?: string; profile?: 'safe' | 'developer' | 'full' };
     if (!body.message?.trim()) return reply.code(400).send({ error: '缺少 message' });
     try {
-      guardProfileSelection(body);
+      validatePermissionSelection(body);
       return await runner.followUp(id, { message: body.message.trim(), agentId: body.agentId, profile: body.profile });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
@@ -352,8 +346,9 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
     const body = (req.body ?? {}) as { agentIds?: string[]; profile?: 'safe' | 'developer' | 'full'; permissionFlags?: string[] };
     if (!body.agentIds?.length) return reply.code(400).send({ error: '缺少 agentIds' });
     try {
-      guardProfileSelection(body);
-      return await runner.forkAll(id, { agentIds: body.agentIds, profile: body.profile, permissionFlags: sanitizePermissionFlags(body.permissionFlags) });
+      validatePermissionSelection(body);
+      for (const agentId of body.agentIds) validatePermissionSelection(body, agentId);
+      return await runner.forkAll(id, { agentIds: body.agentIds, profile: body.profile, permissionFlags: body.permissionFlags });
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -379,14 +374,20 @@ export async function createAgentOSServer(opts: AgentOSServerOptions = {}): Prom
 
   app.get('/api/tasks/:id/diff', async (req, reply) => {
     const { id } = req.params as { id: string };
+    const { file } = req.query as { file?: unknown };
+    if (file !== undefined && (typeof file !== 'string' || !file)) return reply.code(400).send({ error: '无效的文件路径' });
     const task = await runner.taskStore().getTask(id);
     if (!task) return reply.code(404).send({ error: '任务不存在' });
-    const lastRun = [...task.runs].reverse().find((r) => r.worktreePath);
-    if (!lastRun?.worktreePath) return { files: [], stat: '', note: '还没有运行记录' };
+    const lastRun = task.runs.at(-1);
+    if (!lastRun) return { files: [], stat: '', note: '还没有运行记录' };
     try {
-      const base = task.baseRef;
-      const diff = await runner.git.diffAgainstBase(lastRun.worktreePath, base);
-      return { branch: lastRun.branch, worktree: lastRun.worktreePath, ...diff };
+      if (!lastRun.worktreePath || !lastRun.branch) throw new Error('最近运行的 worktree 记录不完整，无法审查');
+      await runner.git.assertWorktree(task.repoRoot, lastRun.worktreePath, lastRun.branch);
+      const base = await runner.git.revParse(lastRun.worktreePath, task.baseRef);
+      const result = file === undefined
+        ? await runner.git.diffAgainstBase(lastRun.worktreePath, base)
+        : await runner.git.filePatch(lastRun.worktreePath, base, file as string);
+      return { branch: lastRun.branch, worktree: lastRun.worktreePath, baseCommit: base, ...result };
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
@@ -415,9 +416,32 @@ export async function startAgentOSServer(
   const { app, runner, dataDir } = await createAgentOSServer(opts);
   const port = opts.port ?? Number(process.env.AGENTOS_PORT ?? 7333);
   const host = opts.host ?? '127.0.0.1';
-  await app.listen({ port, host });
+  try {
+    await app.listen({ port, host });
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 
-  const wss = new WebSocketServer({ server: app.server, path: '/ws' });
+  const address = app.server.address();
+  const actualPort = address && typeof address !== 'string' ? address.port : port;
+  const wss = new WebSocketServer({
+    server: app.server,
+    path: '/ws',
+    verifyClient(info, done) {
+      if (!localRequestAllowed(info.req.headers)) return done(false, 403, 'Forbidden');
+      let taskId: string;
+      try {
+        taskId = assertStorageId(new URL(info.req.url ?? '/', 'http://localhost').searchParams.get('taskId') ?? '');
+      } catch {
+        return done(false, 400, 'Invalid task id');
+      }
+      void runner.taskStore().getTask(taskId).then(
+        task => done(!!task, task ? undefined : 404, task ? undefined : 'Task not found'),
+        () => done(false, 500, 'Task unavailable'),
+      );
+    },
+  });
   wss.on('connection', (conn, req) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const taskId = url.searchParams.get('taskId');
@@ -426,24 +450,47 @@ export async function startAgentOSServer(
       return;
     }
     const log = runner.logFor(taskId);
+    let replaying = true;
+    let pendingBytes = 0;
+    const pending: Array<{ id: string; json: string }> = [];
     const unsub = log.subscribe((evt) => {
-      if (conn.readyState === conn.OPEN) conn.send(JSON.stringify(evt));
+      if (conn.readyState !== conn.OPEN) return;
+      const json = JSON.stringify(evt);
+      if (!replaying) { conn.send(json); return; }
+      pendingBytes += Buffer.byteLength(json);
+      if (pendingBytes > 4 * 1024 * 1024) {
+        // Persisted events can be replayed after reconnect; never grow a slow replay queue forever.
+        pending.length = 0;
+        unsub();
+        conn.close(1013, 'Timeline replay backlog; reconnect');
+        return;
+      }
+      pending.push({ id: evt.id, json });
     });
     conn.on('close', unsub);
+    conn.on('error', unsub);
     void log.readAll().then((events) => {
-      if (conn.readyState === conn.OPEN) conn.send(JSON.stringify({ type: 'history', events }));
-    });
+      if (conn.readyState !== conn.OPEN) return;
+      conn.send(JSON.stringify({ type: 'history', events }));
+      const replayed = new Set(events.map(event => event.id));
+      for (const event of pending) {
+        if (!replayed.has(event.id)) conn.send(event.json);
+      }
+      pending.length = 0;
+      replaying = false;
+    }).catch(() => conn.close(1011, 'Timeline unavailable'));
   });
 
   return {
     app,
     runner,
     dataDir,
-    port,
-    url: `http://${host}:${port}`,
+    port: actualPort,
+    url: `http://${host.includes(':') ? '[' + host + ']' : host}:${actualPort}`,
     wss,
     async close() {
-      wss.close();
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
       await app.close();
     },
   };

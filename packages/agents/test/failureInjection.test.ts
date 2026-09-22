@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -53,6 +53,27 @@ function adapterWith(binary: string): CliHeadlessAdapter {
 }
 
 describe('故障注入：无头进程', () => {
+  it.skipIf(process.platform === 'win32')('POSIX timeout closes inherited pipes of descendant processes', async () => {
+    const script = 'const {spawn}=require("node:child_process");spawn(process.execPath,["-e","setTimeout(()=>{},15000)"],{stdio:"inherit"});setTimeout(()=>{},15000)';
+    const started = Date.now();
+    const result = await spawnCapture(process.execPath, ['-e', script], { timeoutMs: 1000 });
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - started).toBeLessThan(8000);
+  }, 20000);
+
+  it('an already cancelled request never starts a process or writes a file', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'agentos-cancel-'));
+    const marker = path.join(dir, 'must-not-exist.txt');
+    const controller = new AbortController();
+    controller.abort();
+    const result = await spawnCapture(process.execPath, ['-e',
+      'require("node:fs").writeFileSync(process.argv[1], "started")', marker],
+      { signal: controller.signal, timeoutMs: 5000 });
+    expect(existsSync(marker)).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).toBeNull();
+  });
+
   it('超时：挂死进程被强杀，已产出的事件不丢失，timedOut=true', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'agentos-kill-'));
     // 注意：Windows 的 `timeout /t` 在 stdin 重定向下会立即退出（经典陷阱），用 ping 模拟睡眠

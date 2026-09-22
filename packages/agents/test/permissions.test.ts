@@ -25,7 +25,7 @@ describe('统一权限档位映射（ADR-010）', () => {
   });
 
   it('优先级：显式 permissionFlags > profile > safe', () => {
-    expect(resolveRunPermissions('claude', { permissionFlags: ['--x'] })).toEqual(['--x']);
+    expect(resolveRunPermissions('claude', { permissionFlags: ['--permission-mode', 'plan'], profile: 'developer' })).toEqual(['--permission-mode', 'plan']);
     expect(resolveRunPermissions('claude', { profile: 'developer' })).toEqual(flagsForProfile('claude', 'developer'));
     expect(resolveRunPermissions('claude', {})).toBeUndefined();
     expect(resolveRunPermissions('opencode', { profile: 'developer' })).toBeUndefined(); // 空 → undefined（不追加）

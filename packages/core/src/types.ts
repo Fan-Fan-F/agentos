@@ -55,6 +55,7 @@ export type FileChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
 
 export interface ChangedFile {
   path: string;
+  previousPath?: string;
   change: FileChangeKind;
 }
 

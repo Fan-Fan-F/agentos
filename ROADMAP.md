@@ -1,5 +1,11 @@
 # ROADMAP
 
+## 当前产品决策（2026-09-22）
+
+优先级：进程与恢复安全 → 跨 Agent 上下文/验证证据 → 真实 CLI 闭环 → 审查与长历史性能。对标依据及验收条件见 [竞品升级决策](docs/research/07-competitive-upgrade-2026-09-22.md)。
+
+本轮已实现逐文件真实补丁审查、重命名来源贯通、文件反馈入口和读取边界；局部浏览器验收见 [记录](docs/dogfood/2026-09-22-code-review.md)。真实模型成功 E2E 和云端 CI 尚未通过；下面 M3–M5 是候选方向，不是必须堆齐的功能清单。
+
 状态标记（诚实原则，禁止"假完成"）：
 ✅ Implemented = 真实运行且有测试覆盖；🟡 Partial = 部分可用；⬜ Not Implemented = 仅有接口位/未开始。
 
@@ -18,7 +24,7 @@
 - ✅ TaskRunner：solo / swap / forkAll / ask / recover（崩溃恢复）
 - ✅ server：Fastify REST + WS；零构建 Web UI（Minimal）
 - ✅ 测试：unit / integration / adapter contract / handoff / recovery 全绿
-- 🟡 真实 agent 端到端验证：`scripts/real-e2e.mjs` 已真实执行：引擎半程（Capsule 链/HANDOFF/时间线/诊断/探针跳过）真实验证通过；agent 半程被用户侧问题阻塞（claude 402 需充值、codex 需升级，见 docs/blockers.md），解除后重跑即完成
+- 🟡 真实 agent 端到端验证：`scripts/real-e2e.mjs` 已真实执行：引擎半程（Capsule 链/HANDOFF/时间线/诊断/探针跳过）真实验证通过；agent 半程被用户侧问题阻塞（claude 402 需充值、codex 需升级，见 docs/blockers.md），解除后仍需按实际产物与测试结果重新验收
 - 🟡 AcpAdapter：接口位已留，实现列为 M3
 
 ## M2 — 深化（进行中）
@@ -26,8 +32,8 @@
 - ✅ followUp 同会话跟进（原生 resume 优先）
 - ✅ Windows 进程启动加固（launcher 解析，规避 CVE-2024-27980 .cmd EINVAL）
 - ✅ 长提示词通道（stdin / gemini @file），规避命令行长度与上游 stdin 重复 bug
-- ✅ CI 三平台矩阵（windows/ubuntu/macos）
-- ✅ API 安全面：权限参数黑名单
+- 🟡 CI 三平台矩阵配置已编写（windows/ubuntu/macos），尚未推送或实际运行云端验证
+- ✅ API 安全面：权限参数允许清单、loopback/Origin 校验、数据目录实例锁（均有本地回归）
 - ✅ 桌面体验：双击启动器 + App 模式窗口 + ChatGPT 风格 UI 全面翻新 + 首次使用向导 + 设置持久化 + 任务删除（ADR-009）
 - ⬜ Tauri 2 原生壳（cargo 已确认可用；系统托盘/自动更新/文件对话框）
 - ⬜ SQLite（node:sqlite）存储后端（Store 接口不变）

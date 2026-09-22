@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,12 @@ import { EventLog } from '../src/timeline/log.js';
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'agentos-store-'));
 
 describe('JsonStore（ADR-002）', () => {
+  it.each(['../outside', '..\\outside', 'nested/file', 'x:stream', 'NUL'])('rejects unsafe storage key %s', async (id) => {
+    const store = new JsonStore<{ id: string }>(tmp());
+    await expect(store.put({ id })).rejects.toThrow('Invalid storage id');
+    await expect(store.get(id)).rejects.toThrow('Invalid storage id');
+  });
+
   it('put/get/all/roundtrip + 跨实例读取（崩溃恢复基础）', async () => {
     const dir = tmp();
     const s1 = new JsonStore<{ id: string; v: number }>(dir);
@@ -50,6 +56,27 @@ describe('JsonStore（ADR-002）', () => {
 });
 
 describe('EventLog（统一 Timeline）', () => {
+  it('does not treat unreadable event storage as empty history', async () => {
+    const file = path.join(tmp(), 'events.jsonl');
+    const log = new EventLog(file);
+    expect(await log.readAll()).toEqual([]);
+    mkdirSync(file);
+    await expect(log.readAll()).rejects.toThrow();
+  });
+
+  it('skips invalid JSON event shapes without erasing the original evidence', async () => {
+    const file = path.join(tmp(), 'events.jsonl');
+    const log = new EventLog(file);
+    const first = await log.append('t', 'system', 'task.created');
+    appendFileSync(file, 'null\n[]\n42\n{}\n{"id":"wrong","type":4}\n');
+    const last = await log.append('t', 'system', 'task.recovered');
+    const original = readFileSync(file, 'utf8');
+    const restarted = new EventLog(file);
+    expect(await restarted.readAll()).toEqual([first, last]);
+    expect(await restarted.since(first.id)).toEqual([last]);
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  });
+
   it('追加 → 重读 → since 过滤；半行容错', async () => {
     const file = path.join(tmp(), 'events.jsonl');
     const log = new EventLog(file);
@@ -67,6 +94,9 @@ describe('EventLog（统一 Timeline）', () => {
     const { appendFileSync } = await import('node:fs');
     appendFileSync(file, '{"id":"broken","ts":"x"');
     expect((await log2.readAll()).length).toBe(2);
+    const restarted = new EventLog(file);
+    const recovered = await restarted.append('t1', 'system', 'task.recovered');
+    expect((await restarted.readAll()).map(e => e.id)).toEqual([e1.id, e2.id, recovered.id]);
   });
 
   it('subscribe 收到新事件并可退订', async () => {

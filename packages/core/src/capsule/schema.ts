@@ -51,7 +51,7 @@ export const CapsuleSchemaV1 = z.object({
     branch: z.string().optional(),
     worktreePath: z.string().optional(),
     changedFiles: z
-      .array(z.object({ path: z.string(), change: z.enum(['added', 'modified', 'deleted', 'renamed']) }))
+      .array(z.object({ path: z.string(), previousPath: z.string().optional(), change: z.enum(['added', 'modified', 'deleted', 'renamed']) }))
       .default([]),
     diffStat: z.string().optional(),
     commits: z.array(z.object({ hash: z.string(), message: z.string() })).default([]),

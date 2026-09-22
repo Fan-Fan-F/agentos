@@ -74,6 +74,53 @@ afterAll(async () => {
 });
 
 describe('AgentOS REST API', () => {
+  it('rejects incomplete handoff context before calling an agent and allows retry with full context', async () => {
+    const instructions = '必须保留的用户约束'.repeat(3000);
+    const task = await server.runner.createTask({ repoRoot, objective: 'context fidelity', userInstructions: [instructions] });
+    await server.runner.runTask(task.id, { agentId: 'claude' });
+    const adapter = server.runner.adapterFor('codex') as StubAdapter;
+    const previousCalls = adapter.calls.length;
+    const tooSmall = await server.app.inject({ method: 'POST', url: '/api/tasks/' + task.id + '/swap',
+      payload: { toAgentId: 'codex', level: 'standard' } });
+    expect(tooSmall.statusCode).toBe(400);
+    expect(tooSmall.json().error).toMatch(/核心交接上下文/);
+    expect(adapter.calls.length).toBe(previousCalls);
+    const full = await server.app.inject({ method: 'POST', url: '/api/tasks/' + task.id + '/swap',
+      payload: { toAgentId: 'codex', level: 'full' } });
+    expect(full.statusCode).toBe(200);
+    expect(adapter.calls[previousCalls]!.prompt).toContain(instructions);
+    expect(adapter.calls[previousCalls]!.opts?.permissionFlags).toBeUndefined();
+    expect((await server.runner.getTask(task.id)).status).toBe('waiting');
+  });
+
+  it.each(['swap', 'followup', 'fork'])('validates permissions before %s changes task state', async route => {
+    const task = await server.runner.createTask({ repoRoot, objective: 'route boundary' });
+    const result = await server.app.inject({ method: 'POST', url: '/api/tasks/' + task.id + '/' + route,
+      payload: { toAgentId: 'claude', agentId: 'claude', agentIds: ['claude'], message: 'continue',
+        permissionFlags: ['--config', 'approval_policy="never"'] } });
+    expect(result.statusCode).toBe(400);
+    expect((await server.runner.getTask(task.id)).status).toBe('created');
+  });
+
+  it.each([
+    { permissionFlags: ['--add-dir', 'C:/outside'] },
+    { permissionFlags: ['--config', 'approval_policy="never"'] },
+    { permissionFlags: ['-C', 'C:/outside'] },
+    { permissionFlags: ['--', 'replacement prompt'] },
+    { permissionFlags: ['--sandbox'] },
+    { permissionFlags: ['--sandbox', 'workspace-write', '--sandbox', 'read-only'] },
+    { permissionFlags: '--sandbox' },
+    { profile: 'typo' },
+    { allowedTools: ['--other-option'] },
+  ])('rejects unsafe or malformed permission selection before any run: %j', async selection => {
+    const task = await server.runner.createTask({ repoRoot, objective: 'permission boundary' });
+    const result = await server.app.inject({ method: 'POST', url: '/api/tasks/' + task.id + '/run',
+      payload: { agentId: 'claude', ...selection } });
+    expect(result.statusCode).toBe(400);
+    expect((await server.runner.getTask(task.id)).status).toBe('created');
+    expect((await server.runner.getTask(task.id)).runs).toHaveLength(0);
+  });
+
   it('GET /api/health', async () => {
     const res = await server.app.inject({ method: 'GET', url: '/api/health' });
     expect(res.statusCode).toBe(200);
@@ -187,7 +234,7 @@ describe('AgentOS REST API', () => {
       payload: { agentId: 'claude', permissionFlags: ['--dangerously-skip-permissions'] },
     });
     expect(res.statusCode).toBe(400);
-    expect((res.json() as { error: string }).error).toContain('拒绝危险权限参数');
+    expect((res.json() as { error: string }).error).toContain('权限');
 
     const fullProfile = await server.app.inject({
       method: 'POST',

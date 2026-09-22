@@ -10,3 +10,6 @@ Thumbs.db
 .env
 .env.*
 *.local
+
+# Private local iteration instructions are never published.
+docs/ITERATION_GUIDELINES.txt

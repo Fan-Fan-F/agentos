@@ -80,6 +80,8 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     const rinv = a.def.buildResumeArgs!('th-9', '继续', {});
     expect(rinv.args.join(' ')).toContain('resume th-9');
     expect(rinv.stdin).toBe('继续');
+    const permitted = a.def.buildResumeArgs!('th-9', '继续', { permissionFlags: ['--sandbox', 'workspace-write'] });
+    expect(permitted.args.indexOf('--sandbox')).toBeLessThan(permitted.args.indexOf('resume'));
   });
 
   it('Gemini：短提示词位置参数；长提示词走 @file 文件通道（规避上游 stdin 重复 bug）', async () => {

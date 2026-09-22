@@ -12,6 +12,7 @@ import { ensureDir } from '../store/jsonStore.js';
  */
 export class EventLog {
   private emitter = new EventEmitter();
+  private needsBoundaryCheck = true;
   /** 追加串行化：并行 fork 时避免 JSONL 行交错 */
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -32,26 +33,54 @@ export class EventLog {
 
   private async doAppend(taskId: string, actor: string, type: string, payload?: unknown): Promise<TimelineEvent> {
     const evt: TimelineEvent = { id: newId('evt'), ts: nowIso(), taskId, actor, type, payload };
-    await fsp.appendFile(this.file, JSON.stringify(evt) + '\n', 'utf8');
+    let prefix = '';
+    if (this.needsBoundaryCheck) {
+      try {
+        const handle = await fsp.open(this.file, 'r');
+        try {
+          const { size } = await handle.stat();
+          if (size > 0) {
+            const last = Buffer.alloc(1);
+            await handle.read(last, 0, 1, size - 1);
+            if (last[0] !== 10) prefix = '\n';
+          }
+        } finally {
+          await handle.close();
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      }
+    }
+    // Keep crash evidence, but separate an incomplete tail from the next event.
+    await fsp.appendFile(this.file, prefix + JSON.stringify(evt) + '\n', 'utf8');
+    this.needsBoundaryCheck = false;
     this.emitter.emit('event', evt);
     return evt;
   }
 
   async readAll(): Promise<TimelineEvent[]> {
+    await this.chain;
     let raw: string;
     try {
       raw = await fsp.readFile(this.file, 'utf8');
-    } catch {
-      return [];
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
     }
     const out: TimelineEvent[] = [];
     for (const line of raw.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        out.push(JSON.parse(trimmed) as TimelineEvent);
+        const parsed: unknown = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+        const event = parsed as Record<string, unknown>;
+        if (!['id', 'ts', 'taskId', 'actor', 'type'].every(key =>
+          typeof event[key] === 'string' && event[key].length > 0,
+        )) continue;
+        out.push(event as unknown as TimelineEvent);
       } catch {
-        // 尾部半行（崩溃瞬间）容忍跳过
+        // Skip malformed records in memory; never rewrite the original crash evidence.
       }
     }
     return out;

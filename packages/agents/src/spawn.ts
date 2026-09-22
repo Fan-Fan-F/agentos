@@ -22,7 +22,9 @@ function killTree(child: ReturnType<typeof spawn>): void {
   if (child.pid === undefined) return;
   if (process.platform === 'win32') {
     try {
-      spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true });
+      killer.once('error', () => child.kill());
+      killer.once('exit', code => { if (code !== 0 && child.exitCode === null && child.signalCode === null) child.kill(); });
     } catch {
       child.kill();
     }
@@ -37,12 +39,17 @@ function killTree(child: ReturnType<typeof spawn>): void {
 
 /** 无头子进程捕获（MVP 不用 PTY，见 ADR-003）。超时/中止时杀整棵进程树。 */
 export function spawnCapture(cmd: string, args: string[], opts: SpawnCaptureOptions = {}): Promise<SpawnResult> {
+  if (opts.signal?.aborted) {
+    return Promise.resolve({ stdout: '', stderr: '', exitCode: null, timedOut: true });
+  }
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       cwd: opts.cwd,
       env: opts.env ? { ...process.env, ...opts.env } : process.env,
       windowsHide: true,
       shell: false,
+      // POSIX kill(-pid) must target a process group created for this child.
+      detached: process.platform !== 'win32',
     });
     let stdout = '';
     let stderr = '';
