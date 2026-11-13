@@ -1,5 +1,19 @@
+import type { AgentRunOptions } from '../adapter.js';
 import { CliHeadlessAdapter, type PromptInvocation } from '../cliHeadless.js';
 import { profileFor } from '../catalog.js';
+
+function buildClaudeArgs(opts?: AgentRunOptions): string[] {
+  return [
+    '-p',
+    '--output-format',
+    'stream-json',
+    '--verbose',
+    ...(opts?.model ? ['--model', opts.model] : []),
+    ...(opts?.allowedTools?.length ? ['--allowedTools', opts.allowedTools.join(',')] : []),
+    ...(opts?.permissionFlags ?? []),
+    ...(opts?.extraArgs ?? []),
+  ];
+}
 
 /**
  * Claude Code 适配器（stream-json；session_id 来自 system/init 与 result 事件，见 docs/research/04 §1）。
@@ -14,30 +28,13 @@ export function createClaudeAdapter(binary = 'claude'): CliHeadlessAdapter {
     npmPackage: '@anthropic-ai/claude-code',
     buildRunArgs(prompt, opts): PromptInvocation {
       return {
-        args: [
-          '-p',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          ...(opts?.allowedTools?.length ? ['--allowedTools', opts.allowedTools.join(',')] : []),
-          ...(opts?.permissionFlags ?? []),
-          ...(opts?.extraArgs ?? []),
-        ],
+        args: buildClaudeArgs(opts),
         stdin: prompt,
       };
     },
     buildResumeArgs(sessionRef, prompt, opts): PromptInvocation {
       return {
-        args: [
-          '--resume',
-          sessionRef,
-          '-p',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          ...(opts?.permissionFlags ?? []),
-          ...(opts?.extraArgs ?? []),
-        ],
+        args: ['--resume', sessionRef, ...buildClaudeArgs(opts)],
         stdin: prompt,
       };
     },
