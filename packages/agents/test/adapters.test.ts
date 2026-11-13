@@ -62,6 +62,28 @@ describe('CLI 适配器解析器（真实 schema 样本）', () => {
     expect(rinv.args.join(' ')).toContain('--resume abc-123');
   });
 
+  it('Claude 首次运行与续接都透传模型和允许的工具', () => {
+    const { def } = createClaudeAdapter();
+    const options = {
+      model: 'claude-test-model',
+      allowedTools: ['Read', 'Edit'],
+      permissionFlags: ['--permission-mode', 'acceptEdits'],
+      extraArgs: ['--max-turns', '3'],
+    };
+    const args = [
+      '-p', '--output-format', 'stream-json', '--verbose',
+      '--model', 'claude-test-model',
+      '--allowedTools', 'Read,Edit',
+      '--permission-mode', 'acceptEdits',
+      '--max-turns', '3',
+    ];
+    expect(def.buildRunArgs('做任务', options)).toEqual({ args, stdin: '做任务' });
+    expect(def.buildResumeArgs!('abc-123', '继续', options)).toEqual({
+      args: ['--resume', 'abc-123', ...args],
+      stdin: '继续',
+    });
+  });
+
   it('Claude 坏行容错：垃圾行不炸解析器', () => {
     const a = createClaudeAdapter();
     const { ctx } = feed(a.def, ['not json at all', '{"type":"unknown-weird"}', ...claudeLines]);
